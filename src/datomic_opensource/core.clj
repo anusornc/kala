@@ -686,8 +686,12 @@
     (err :db/bad-t "Expected t or a tx entity id, got a user entity id" {:e x})
     :else x))
 
+;; Log entries round-trip through Java serialization, which yields Boolean
+;; instances that are NOT reference-identical to the compiled true/false
+;; literals — so true?/false? (identity checks) would misclassify them.
+;; Compare by value and canonicalize.
 (defn- raw->datom [[e a v tx added]]
-  (->Datom e a v tx added))
+  (->Datom e a v tx (boolean (= added true))))
 
 ;; Allocation index (block*1024 + idx) of a user-partition entity id, for
 ;; rebuilding ::next-idx during replay.
@@ -762,3 +766,10 @@
   storage or the connection."
   [db tx-data]
   (dissoc (transact-report db tx-data) :raw-datoms))
+
+(defn restore-db
+  "Rebuild the current db value from the complete storage log. Opening an
+  existing database is: open storage, restore-db, continue — nothing is
+  lost or applied twice."
+  [storage]
+  (replay storage Long/MAX_VALUE false))

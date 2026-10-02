@@ -1,10 +1,25 @@
 (ns datomic-opensource.test-util
-  "Shared helpers for the behavioral-seam test suites."
+  "Shared helpers for the behavioral-seam test suites. The suite runs twice
+  per CI cycle — once per storage backend — via *storage-opts*; fresh-conn
+  isolates each connection in its own memory db or temp directory."
   (:require [clojure.test :refer [is]]
             [datomic-opensource.api :as api]))
 
+(def ^:dynamic *storage-opts*
+  "Storage backend selector for fresh-conn. The test runner binds this to
+  {:storage :memory} and {:storage :file :path <tmp-root>} in turn."
+  {:storage :memory})
+
+(defn- unique-path []
+  (str (java.nio.file.Files/createTempDirectory
+        (str "dos-suite-" (java.util.UUID/randomUUID))
+        (make-array java.nio.file.attribute.FileAttribute 0))))
+
 (defn fresh-conn []
-  (api/connect {:storage :memory :name "test"}))
+  (api/connect
+   (if (= :file (:storage *storage-opts*))
+     (assoc *storage-opts* :path (unique-path))
+     *storage-opts*)))
 
 (defn define!
   ([conn tempid ident value-type]

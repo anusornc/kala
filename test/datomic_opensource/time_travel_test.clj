@@ -80,12 +80,15 @@
 (deftest history-includes-retractions-with-status
   (let [{:keys [conn alice tx4]} (load-fixture!)
         db-hist (api/history (api/db conn))
-        age-datoms (filter #(= :person/age (:a %))
-                           (api/datoms db-hist :eavt [alice]))]
+        age-datoms (vec (filter #(= :person/age (:a %))
+                                (api/datoms db-hist :eavt [alice])))]
     (testing "both the assertion and the retraction are present"
       (is (= [true false] (mapv :added age-datoms))))
     (testing "retraction carries the retracting tx"
-      (is (= tx4 (:tx (some #(when (false? (:added %)) %) age-datoms)))))))
+      (let [retraction (some #(when (false? (:added %)) %) age-datoms)]
+        (is (some? retraction) (pr-str age-datoms))
+        (is (= tx4 (:tx retraction))
+            (pr-str {:tx4 tx4 :retraction retraction}))))))
 
 ;; ---- with --------------------------------------------------------------------
 

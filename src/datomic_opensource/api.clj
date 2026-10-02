@@ -5,21 +5,29 @@
             [datomic-opensource.entity :as entity]
             [datomic-opensource.pull :as pull]
             [datomic-opensource.query :as query]
+            [datomic-opensource.storage.file :as file]
             [datomic-opensource.storage.memory :as memory]))
 
 (defn connect
-  "Open a connection to a database. v1 supports in-memory storage:
+  "Open a connection to a database:
 
      (connect {:storage :memory :name \"dev\"})
+     (connect {:storage :file :path \"/var/data/mydb\"})
 
-  Returns a connection holding the current immutable db value."
-  [{:keys [storage name] :or {storage :memory name "db"}}]
+  Opening existing storage rebuilds the db from the log — crash recovery is
+  part of connect. Returns a connection holding the current immutable db
+  value."
+  [{:keys [storage path name] :or {storage :memory name "db"}}]
   (let [s (case storage
             :memory (memory/empty-storage)
+            :file (do (when-not path
+                        (throw (ex-info "File storage requires :path"
+                                        {:datomic-opensource/error :connect/missing-path})))
+                      (file/open-storage path))
             (throw (ex-info "Unknown storage backend"
                             {:datomic-opensource/error :connect/unknown-storage
                              :storage storage})))]
-    (atom (core/empty-db s))))
+    (atom (core/restore-db s))))
 
 (defn db
   "The current immutable db value."
