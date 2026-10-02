@@ -22,16 +22,24 @@ clojure -M:transactor transactor.properties.edn
 
 Then connect remotely with `datomic-opensource.client/connect` — see [docs/wire-protocol.md](docs/wire-protocol.md) for the protocol.
 
-## Release
+## Release (local)
 
-Pushing a tag `v*` runs the test suite and publishes to Clojars as
-`io.github.anusornc/datomic-opensource` (configure the `CLOJARS_USERNAME` /
-`CLOJARS_PASSWORD` repository secrets first). Locally:
+Everything runs locally — there is no CI. Test before releasing:
+
+```bash
+clojure -M:test
+```
+
+Then build the jar (EPL-1.0 notices included) and optionally publish it to
+Clojars as `io.github.anusornc/datomic-opensource`:
 
 ```bash
 RELEASE_VERSION=0.1.0 clojure -T:build jar
-clojure -M:deploy -m deploy   # reads CLOJARS_USERNAME / CLOJARS_PASSWORD
+CLOJARS_USERNAME=... CLOJARS_PASSWORD=... clojure -M:deploy -m deploy
 ```
+
+The deploy step reads your Clojars credentials from the environment; skip
+it entirely if you only want the jar.
 
 ## Architecture (v1 target)
 
