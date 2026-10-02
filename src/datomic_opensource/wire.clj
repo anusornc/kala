@@ -20,11 +20,16 @@
 (defn- b64-decode [s]
   (.decode (Base64/getDecoder) (str s)))
 
+(defn- to-uri [s]
+  (java.net.URI. (str s)))
+
 (defn- to-edn [x]
   (walk/postwalk (fn [v]
-                   (if (bytes? v)
-                     (tagged-literal 'dos/b64 (b64-encode v))
-                     v))
+                   (cond
+                     (bytes? v) (tagged-literal 'dos/b64 (b64-encode v))
+                     (instance? Float v) (tagged-literal 'dos/float (float v))
+                     (instance? java.net.URI v) (tagged-literal 'dos/uri (str v))
+                     :else v))
                  x))
 
 (defn read-msg
@@ -44,8 +49,12 @@
                              off))                       ; EOF mid-frame
                          len))]
             (when (= read len)
-              (edn/read-string {:readers {'dos/b64 b64-decode}}
-                               (String. buf StandardCharsets/UTF_8))))))
+              (let [frame (String. buf StandardCharsets/UTF_8)]
+                (println :WIRE-READ (subs frame 0 (min 200 (count frame))))
+                (edn/read-string {:readers {'dos/b64 b64-decode
+                                            'dos/float float
+                                            'dos/uri to-uri}}
+                                 frame))))))
       (catch java.io.EOFException _ nil)
       (catch java.net.SocketException _ nil))))
 
@@ -54,6 +63,12 @@
   [out msg]
   (let [dos (DataOutputStream. out)
         payload (.getBytes (pr-str (to-edn msg)) StandardCharsets/UTF_8)]
+    (println :WIRE-WRITE (subs (String. payload StandardCharsets/UTF_8) 0 (min 200 (alength payload))))
     (.writeInt dos (alength payload))
     (.write dos payload)
     (.flush dos)))
+
+(defn write-msg-str
+  "Debug helper: the exact wire payload for a message."
+  [msg]
+  (pr-str (to-edn msg)))

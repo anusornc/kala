@@ -3,12 +3,17 @@
   per CI cycle — once per storage backend — via *storage-opts*; fresh-conn
   isolates each connection in its own memory db or temp directory."
   (:require [clojure.test :refer [is]]
-            [datomic-opensource.api :as api]))
+            [datomic-opensource.api :as api]
+            [datomic-opensource.client :as client]
+            [datomic-opensource.transactor :as tx]))
 
 (def ^:dynamic *storage-opts*
   "Storage backend selector for fresh-conn. The test runner binds this to
   {:storage :memory} and {:storage :file :path <tmp-root>} in turn."
   {:storage :memory})
+
+(def ^:dynamic *access-mode* :peer)
+(def ^:dynamic *name* "test")
 
 (defn- unique-path []
   (str (java.nio.file.Files/createTempDirectory
@@ -16,10 +21,16 @@
         (make-array java.nio.file.attribute.FileAttribute 0))))
 
 (defn fresh-conn []
-  (api/connect
-   (if (= :file (:storage *storage-opts*))
-     (assoc *storage-opts* :path (unique-path))
-     *storage-opts*)))
+  (if (= :client *access-mode*)
+    (let [storage-opts (if (= :file (:storage *storage-opts*))
+                         (assoc *storage-opts* :path (unique-path))
+                         *storage-opts*)
+          t (tx/start! (assoc storage-opts :port 0))]
+      (client/connect {:host "127.0.0.1" :port (:port t) :name *name*}))
+    (api/connect
+     (if (= :file (:storage *storage-opts*))
+       (assoc *storage-opts* :path (unique-path))
+       *storage-opts*))))
 
 (defn define!
   ([conn tempid ident value-type]

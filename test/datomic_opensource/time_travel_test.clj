@@ -1,4 +1,4 @@
-(ns datomic-opensource.time-travel-test
+(ns ^:peer datomic-opensource.time-travel-test
   "Behavioral seam: time travel — as-of snapshots, since views, history with
   retraction status, and speculative with()."
   (:require [clojure.test :refer [deftest is testing]]

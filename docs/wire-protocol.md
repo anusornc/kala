@@ -14,8 +14,9 @@ The transactor speaks a request/reply protocol over TCP. Version 1.
 ## Handshake
 
 Every connection starts with a `:connect` request carrying the client's
-protocol version. A version mismatch is a structured error and the server
-closes the connection.
+protocol version; any other first message gets a
+`:protocol/connect-required` error. A version mismatch is a structured
+error and the server closes the connection.
 
     {:op :connect :protocol-version 1}
     {:status :ok :protocol-version 1 :t <current t>}
@@ -27,13 +28,23 @@ closes the connection.
 | `:connect` | `:protocol-version` | `:protocol-version`, `:t` |
 | `:db` | — | `:t` (the transactor's current t) |
 | `:transact` | `:tx-data` (list-form ops and/or map-form entities) | `:t`, `:tx-data` (public datom maps), `:tempids` (incl. `:db/current-tx`) |
-| `:q` | `:query` (data form or EDN string), `:args` (further `:in` inputs, in order), optional `:t`, optional `:history` | `:rows` |
-| `:pull` | `:pattern`, `:eid`, optional `:t` / `:history` | `:doc` |
-| `:datoms` | `:index`, `:components`, optional `:t` / `:history` | `:datoms` (public datom maps) |
+| `:with` | `:tx-data`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:t`, `:db-ref`, `:tx-data`, `:tempids` |
+| `:q` | `:query` (data form or EDN string), `:args` (further `:in` inputs, in order), optional `:t` / `:since-t` / `:history` / `:db-ref` | `:rows` |
+| `:pull` | `:pattern`, `:eid`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:doc` |
+| `:datoms` | `:index`, `:components`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:datoms` (public datom maps) |
+| `:listen` | — | `:listening`, then push notifications (see below) |
 
-`$` is always the transactor's db value — as-of `:t` when supplied, the
-current db otherwise; `history` when requested. Further `:q` `:args` bind
-the remaining `:in` symbols.
+`$` is the db value the request names — as-of `:t` when supplied, a
+`:since-t` view, `history` when requested, the `:db-ref` speculative value
+when supplied, and the current db otherwise. Further `:q` `:args` bind the
+remaining `:in` symbols.
+
+## Speculative transactions
+
+`:with` applies `:tx-data` against the named db value and returns the
+result plus a `:db-ref` handle. Reads (q, pull, datoms) accept `:db-ref`
+to address the speculative value. The transactor keeps a bounded window of
+recent speculative values; nothing is committed.
 
 ## Replies
 
@@ -44,6 +55,17 @@ Error kinds are the engine's typed kinds (`:transact/unique-conflict`,
 `:transact/bad-value-type`, `:query/unknown-attribute`,
 `:protocol/version-mismatch`, `:transactor/error`, ...). Writes that fail
 leave the database untouched; clients may retry safely.
+
+## Notifications
+
+After `:connect`, a connection may send `:listen`. The server acks with
+`{:status :ok :listening true}` and then pushes one message per committed
+transaction:
+
+    {:notification :tx-completed :t <the new t>}
+
+Listen sockets carry only pushes after the ack; ordering matches the
+commit order. Broken listener sockets are dropped silently.
 
 ## Write ordering
 

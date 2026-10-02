@@ -1,4 +1,4 @@
-(ns datomic-opensource.pull-entity-test
+(ns ^:peer datomic-opensource.pull-entity-test
   "Behavioral seam: pull patterns, lazy entity navigation, pull inside
   queries, VAET enumeration, and seek/range scans."
   (:require [clojure.test :refer [deftest is testing]]

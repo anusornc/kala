@@ -61,8 +61,9 @@
                     (api/transact conn [[:db/add "e" :t/name 1]]))
       (assert-error :transact/unknown-attribute
                     (api/transact conn [[:db/add "e" :t/nope 1]]))
-      (is (identical? db-before (api/db conn)))
-      (is (= (::core/t db-before) (::core/t (api/db conn)))))))
+      ;; client markers are records equal by conn+mode+t; peer db values are
+      ;; equal by content — either way, failed writes changed nothing
+      (is (= db-before (api/db conn))))))
 
 (deftest unknown-value-type-is-rejected-at-definition
   (let [conn (fresh-conn)
