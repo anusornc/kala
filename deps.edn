@@ -5,4 +5,8 @@
          :main-opts ["-m" "datomic-opensource.test-runner"]}
   :transactor {:main-opts ["-m" "datomic-opensource.transactor"]}
   :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
-          :ns-default build}}}
+          :ns-default build}
+  :bench {:extra-paths ["bench"]
+          :extra-deps {criterium/criterium {:mvn/version "0.4.6"}
+                       datascript/datascript {:mvn/version "1.7.4"}}
+          :main-opts ["-m" "datomic-opensource.bench"]}}}

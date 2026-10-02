@@ -13,6 +13,17 @@ clojure -T:build jar     # build the release jar (EPL-1.0 notices included)
 
 The behavioral suite runs twice per cycle — peer (embedded) and client (remote, over the wire against a live transactor) — on both storage backends, which is what enforces access-mode and storage-backend parity. Entity navigation and seek scans are peer-only; clients use pull. Tests run at two seams: the behavioral API suite and the storage-protocol contract suite per adapter.
 
+## Benchmark
+
+```bash
+clojure -M:bench                # 1000 entities
+clojure -M:bench 5000           # custom entity count
+```
+
+Runs our peer engine and DataScript on identical seed data, cross-checks
+that both engines return the same query results, then prints ingest and
+query latencies. Dependencies (criterium, datascript) are bench-only.
+
 ## Launch a transactor
 
 ```bash
