@@ -2,4 +2,5 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.1"}}
  :aliases
  {:test {:extra-paths ["test"]
-         :main-opts ["-m" "datomic-opensource.test-runner"]}}}
+         :main-opts ["-m" "datomic-opensource.test-runner"]}
+  :transactor {:main-opts ["-m" "datomic-opensource.transactor"]}}}

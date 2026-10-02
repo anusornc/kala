@@ -14,6 +14,7 @@
             [datomic-opensource.time-travel-test]
 
             [datomic-opensource.file-recovery-test]
+            [datomic-opensource.transactor-test]
             [datomic-opensource.storage.memory-test]
             [datomic-opensource.storage.file-test]))
 
@@ -28,6 +29,7 @@
 
 (def ^:private backend-specific-ns-symbols
   ['datomic-opensource.file-recovery-test
+   'datomic-opensource.transactor-test
    'datomic-opensource.storage.memory-test
    'datomic-opensource.storage.file-test])
 
