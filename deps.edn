@@ -5,6 +5,4 @@
          :main-opts ["-m" "datomic-opensource.test-runner"]}
   :transactor {:main-opts ["-m" "datomic-opensource.transactor"]}
   :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
-          :ns-default build}
-  :deploy {:deps {slipset/deps-deploy {:mvn/version "0.2.2"}}
-           :ns-default deploy}}}
+          :ns-default build}}}
