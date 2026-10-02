@@ -2,6 +2,7 @@
   "Public embedded (peer-style) API. Tests and downstream programs drive
   everything through this namespace (behavioral seam)."
   (:require [datomic-opensource.core :as core]
+            [datomic-opensource.query :as query]
             [datomic-opensource.storage.memory :as memory]))
 
 (defn connect
@@ -39,3 +40,12 @@
   "Resolve an ident keyword to its entity id; entity ids pass through."
   [db ident]
   (core/entid db ident))
+
+(defn q
+  "Run a Datalog query against the db (and any further :in inputs):
+
+     (q '[:find ?n :in $ ?name :where [?p :person/name ?name]] (db conn) \"Alice\")
+
+  The query is a data form or an EDN string."
+  [query & inputs]
+  (query/q query inputs))

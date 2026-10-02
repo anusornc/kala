@@ -229,6 +229,18 @@
   (->> (subseq index-set >= (low-bound index comps))
        (take-while (prefix-pred index comps))))
 
+;; Bridges for the query engine (datomic-opensource.query), which works on
+;; raw datoms with attribute ids.
+(defn attribute [db ident]
+  (get (::schema-by-ident db) ident))
+
+(defn index-slice [db index comps]
+  (let [index-set (case index :eavt (::eavt db) :aevt (::aevt db) :avet (::avet db))]
+    (slice index-set index comps)))
+
+(defn value-eq [x y]
+  (val= x y))
+
 (defn- public-datom [db ^Datom d]
   (let [ident (or (:ident (get (::schema-by-id db) (.a d))) (.a d))]
     (->Datom (.e d) ident (.v d) (.tx d) (.added d))))
@@ -270,9 +282,8 @@
 (defn datoms [db index components]
   (when-not (contains? comp-fields index)
     (err :datoms/unknown-index "Unknown index" {:index index}))
-  (let [comps (resolve-components db index components)
-        index-set (case index :eavt (::eavt db) :aevt (::aevt db) :avet (::avet db))]
-    (map (partial public-datom db) (slice index-set index comps))))
+  (let [comps (resolve-components db index components)]
+    (map (partial public-datom db) (index-slice db index comps))))
 
 (defn- current-datom [db e a-id v]
   (first (filter #(val= v (.v ^Datom %))

@@ -3,10 +3,8 @@
   connect -> transact -> datoms/entid reads — exactly as a downstream program would."
   (:require [clojure.test :refer [deftest is testing]]
             [datomic-opensource.api :as api]
-            [datomic-opensource.core :as core]))
-
-(defn fresh-conn []
-  (api/connect {:storage :memory :name "test"}))
+            [datomic-opensource.core :as core]
+            [datomic-opensource.test-util :refer [fresh-conn]]))
 
 (defn install-person-schema! [conn]
   (api/transact conn
