@@ -2,6 +2,7 @@
   (:require [clojure.test :as t]
 
             [datomic-opensource.api-test]
+            [datomic-opensource.schema-test]
             [datomic-opensource.storage.memory-test]))
 
 (defn -main [& _]
