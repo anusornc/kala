@@ -2,7 +2,15 @@
 
 An independent, clean-room, open-source (EPL-1.0) reimplementation of [Datomic](https://docs.datomic.com)'s architecture in Clojure on the JVM: a transactor that serializes writes into an append-only log, an embedded peer library with in-memory indexes, a remote client library, Datalog queries, the pull API, and time travel.
 
-**Status: spec phase** — the v1 specification is tracked in the issue tracker. No implementation yet.
+**Status: implementation underway** — TT1 (in-memory end-to-end datom store) is in; the v1 specification and ticket backlog are tracked in the issue tracker.
+
+## Build and test
+
+```bash
+clojure -M:test
+```
+
+Tests run at two seams: the behavioral API suite (connect → transact → datoms reads) and the storage-protocol contract suite per adapter.
 
 ## Architecture (v1 target)
 
