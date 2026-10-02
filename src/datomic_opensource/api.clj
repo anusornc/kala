@@ -2,6 +2,8 @@
   "Public embedded (peer-style) API. Tests and downstream programs drive
   everything through this namespace (behavioral seam)."
   (:require [datomic-opensource.core :as core]
+            [datomic-opensource.entity :as entity]
+            [datomic-opensource.pull :as pull]
             [datomic-opensource.query :as query]
             [datomic-opensource.storage.memory :as memory]))
 
@@ -49,3 +51,26 @@
   The query is a data form or an EDN string."
   [query & inputs]
   (query/q query inputs))
+
+(defn pull
+  "Shape one entity into a document per the pull pattern, e.g.
+  (pull db '[*] eid) or (pull db '[{:person/friend [:person/name]}] eid)."
+  [db pattern eid]
+  (pull/pull db pattern eid))
+
+(defn entity
+  "A lazy navigable entity: (e :attr), (:attr e), :db/id, reverse refs via
+  :ns/_attr. Ref attributes return entities."
+  [db eid]
+  (entity/entity db eid))
+
+(defn touch
+  "Expand an entity into a plain map, loading its component tree."
+  [e]
+  (entity/touch e))
+
+(defn seek-datoms
+  "All datoms from the requested index position onward (no prefix filter),
+  for paging scans."
+  [db index components]
+  (core/seek-datoms db index components))

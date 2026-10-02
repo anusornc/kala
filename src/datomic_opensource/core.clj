@@ -2,7 +2,8 @@
   "Datom representation, entity-id allocation, the bootstrap schema, index
   construction, and the transaction pipeline. No I/O here: storage sits behind
   the Storage protocol (seam 2). Reads go through immutable db values."
-  (:require [datomic-opensource.storage :as storage]))
+  (:require [clojure.string :as str]
+            [datomic-opensource.storage :as storage]))
 
 ;; ---- errors -----------------------------------------------------------------
 
@@ -76,9 +77,13 @@
 (def ^:private index-specs
   {:eavt {:fields [:e :a :v :tx] :set ::eavt :cmp (cmp-by [:e :a :v :tx])}
    :aevt {:fields [:a :e :v :tx] :set ::aevt :cmp (cmp-by [:a :e :v :tx])}
-   :avet {:fields [:a :v :e :tx] :set ::avet :cmp (cmp-by [:a :v :e :tx])}})
+   :avet {:fields [:a :v :e :tx] :set ::avet :cmp (cmp-by [:a :v :e :tx])}
+   ;; Datomic's VAET holds only reference datoms (reverse-ref lookups)
+   :vaet {:fields [:v :a :e :tx] :set ::vaet :cmp (cmp-by [:v :a :e :tx]) :ref-only true}})
 
-(def ^:private all-index-sets (mapv :set (vals index-specs)))
+(defn- ref-datom? [db ^Datom d]
+  (= :db.type/ref (:value-type (get (::schema-by-id db) (.a d)))))
+
 
 ;; ---- value types ------------------------------------------------------------
 
@@ -175,9 +180,12 @@
                                        [(:db/ident spec) (attr-map spec id)]))
                                    meta-attrs))
         schema-by-id (into {} (map (fn [[ident m]] [(:id m) m]) schema-by-ident))
+        ref-datom?* (fn [^Datom d]
+                      (= :db.type/ref (:value-type (get schema-by-id (.a d)))))
         index-sets (into {}
-                         (map (fn [[index {:keys [set cmp]}]]
-                                [set (into (sorted-set-by cmp) datoms)]))
+                         (map (fn [[index {:keys [set cmp ref-only]}]]
+                                [set (into (sorted-set-by cmp)
+                                           (if ref-only (filter ref-datom?* datoms) datoms))]))
                          index-specs)]
     (merge index-sets
            {::storage storage
@@ -237,6 +245,19 @@
 (defn value-eq [x y]
   (val= x y))
 
+;; Reverse reference syntax: :ns/_attr names the inverse of :ns/attr. Shared
+;; by the query engine and the pull engine.
+(defn reverse-attr? [a]
+  (and (keyword? a) (str/starts-with? (name a) "_")))
+
+(defn reverse-attr [a]
+  (if (reverse-attr? a)
+    (keyword (namespace a) (subs (name a) 1))
+    a))
+
+(defn many-attr? [attr]
+  (= :db.cardinality/many (:cardinality attr)))
+
 (defn- public-datom [db ^Datom d]
   (let [ident (or (:ident (get (::schema-by-id db) (.a d))) (.a d))]
     (->Datom (.e d) ident (.v d) (.tx d) (.added d))))
@@ -276,11 +297,25 @@
             pass1
             (range n))))
 
+;; raw datoms from the requested position to the end of the index
+(defn- index-from [db index comps]
+  (subseq (get db (:set (index-specs index))) >= (low-bound index comps)))
+
 (defn datoms [db index components]
   (when-not (contains? index-specs index)
     (err :datoms/unknown-index "Unknown index" {:index index}))
   (let [comps (resolve-components db index components)]
-    (map (partial public-datom db) (index-slice db index comps))))
+    (->> (index-from db index comps)
+         (filter (prefix-pred index comps))
+         (map (partial public-datom db)))))
+
+;; seek-datoms: like datoms but WITHOUT the prefix filter — everything from
+;; the requested position to the end of the index, for paging scans.
+(defn seek-datoms [db index components]
+  (when-not (contains? index-specs index)
+    (err :datoms/unknown-index "Unknown index" {:index index}))
+  (map (partial public-datom db)
+       (index-from db index (resolve-components db index components))))
 
 (defn- current-datom [db e a-id v]
   (first (filter #(val= v (.v ^Datom %))
@@ -383,9 +418,12 @@
               (err :transact/bad-entity "Cannot retract using a tempid" {:v x})))))
 
 (defn- update-indexes [db f ^Datom d]
-  (reduce (fn [db set-key] (update db set-key f d))
+  (reduce (fn [db {:keys [set ref-only]}]
+            (if (and ref-only (= conj f) (not (ref-datom? db d)))
+              db
+              (update db set f d)))
           db
-          all-index-sets))
+          (vals index-specs)))
 
 (defn- add-datom [db ^Datom d]
   [(update-indexes db conj d)

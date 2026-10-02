@@ -7,7 +7,8 @@
   aggregates with :with-aware grouping."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
-            [datomic-opensource.core :as core]))
+            [datomic-opensource.core :as core]
+            [datomic-opensource.pull :as pull]))
 
 (def ^:private unbound ::unbound)
 
@@ -141,6 +142,19 @@
         :else (err :query/bad-find "Unsupported find specification" {:find find-elems}))
 
       (and (some list? find-elems)
+           (not-any? vector? find-elems)
+           (every? #(= 'pull (first %)) (filter list? find-elems)))
+      {:type :pull
+       :els (mapv (fn [el]
+                    (if (list? el)
+                      (let [[_ var pattern] el]
+                        (when-not (symbol? var)
+                          (err :query/bad-find "(pull ?var pattern) needs a variable" {:find find-elems}))
+                        {:pull var :pattern pattern})
+                      el))
+                  find-elems)}
+
+      (and (some list? find-elems)
            (not-any? vector? find-elems))
       {:type :aggregate :els (mapv (fn [el] (if (list? el) (parse-aggregate el) el)) find-elems)}
 
@@ -152,20 +166,15 @@
 
 ;; ---- patterns ------------------------------------------------------------------
 
-(defn- reverse-attr? [a]
-  (and (keyword? a) (str/starts-with? (name a) "_")))
-
 (defn- resolve-attr [db a]
   (cond
     (= a '_) {:any? true}
     (keyword? a)
-    (let [ident (if (reverse-attr? a)
-                  (keyword (namespace a) (subs (name a) 1))
-                  a)
+    (let [ident (core/reverse-attr a)
           attr (or (core/attribute db ident)
                    (err :query/unknown-attribute "Unknown attribute" {:attribute a}))]
       {:id (:id attr)
-       :reverse (boolean (reverse-attr? a))
+       :reverse (boolean (core/reverse-attr? a))
        :ref? (= :db.type/ref (:value-type attr))})
     :else (err :query/bad-attribute
                "Attribute must be a keyword or _" {:attribute a})))
@@ -363,12 +372,14 @@
     rand (vec (take n (shuffle (distinct values))))
     sample (vec (take n (shuffle values)))))
 
+(defn- dedupe-on [var-seqs solutions]
+  (dedupe-by-keys (vec (distinct (apply concat var-seqs))) solutions))
+
 (defn- project-aggregate [els solutions with-vars]
   (let [group-vars (vec (filter symbol? els))
         agg-els (vec (filter map? els))
         agg-vars (map :var agg-els)
-        dedup-key (vec (distinct (concat group-vars agg-vars (vec with-vars))))
-        deduped (dedupe-by-keys dedup-key solutions)
+        deduped (dedupe-on [group-vars agg-vars (vec with-vars)] solutions)
         groups (group-by (fn [s] (mapv #(get s %) group-vars)) deduped)]
     ;; group values are already the plain find els; append aggregate results
     (map (fn [[group-values group]]
@@ -378,9 +389,28 @@
                       agg-els)))
          groups)))
 
-(defn- project [spec solutions with-vars]
-  (if (= :aggregate (:type spec))
+(defn- project-pull [db els solutions with-vars]
+  (let [plain-vars (vec (filter symbol? els))
+        pull-vars (mapv :pull (filter map? els))
+        deduped (dedupe-on [plain-vars pull-vars (vec with-vars)] solutions)]
+    (map (fn [s]
+           (mapv (fn [el]
+                   (cond
+                     (symbol? el) (get s el)
+                     (contains? el :pull) (pull/pull db (:pattern el) (get s (:pull el)))
+                     :else nil))
+                 els))
+         deduped)))
+
+(defn- project [db spec solutions with-vars]
+  (cond
+    (= :pull (:type spec))
+    (project-pull db (:els spec) solutions with-vars)
+
+    (= :aggregate (:type spec))
     (project-aggregate (:els spec) solutions with-vars)
+
+    :else
     (let [find-vars (case (:type spec)
                       :relation (vec (:vars spec))
                       [(:var spec)])
@@ -428,4 +458,4 @@
                 [{}]
                 pairs)
         solutions (run-where* db rule-sols where initial-solutions)]
-    (project spec solutions (vec with))))
+    (project db spec solutions (vec with))))
