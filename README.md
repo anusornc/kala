@@ -7,10 +7,31 @@ An independent, clean-room, open-source (EPL-1.0) reimplementation of [Datomic](
 ## Build and test
 
 ```bash
-clojure -M:test
+clojure -M:test          # full matrix: {peer, client} x {memory, file} + backend suites
+clojure -T:build jar     # build the release jar (EPL-1.0 notices included)
 ```
 
-Tests run at two seams: the behavioral API suite (connect → transact → datoms reads) and the storage-protocol contract suite per adapter.
+The behavioral suite runs twice per cycle — peer (embedded) and client (remote, over the wire against a live transactor) — on both storage backends, which is what enforces access-mode and storage-backend parity. Entity navigation and seek scans are peer-only; clients use pull. Tests run at two seams: the behavioral API suite and the storage-protocol contract suite per adapter.
+
+## Launch a transactor
+
+```bash
+echo '{:port 4334 :storage :file :path "/var/data/mydb"}' > transactor.properties.edn
+clojure -M:transactor transactor.properties.edn
+```
+
+Then connect remotely with `datomic-opensource.client/connect` — see [docs/wire-protocol.md](docs/wire-protocol.md) for the protocol.
+
+## Release
+
+Pushing a tag `v*` runs the test suite and publishes to Clojars as
+`io.github.anusornc/datomic-opensource` (configure the `CLOJARS_USERNAME` /
+`CLOJARS_PASSWORD` repository secrets first). Locally:
+
+```bash
+RELEASE_VERSION=0.1.0 clojure -T:build jar
+clojure -M:deploy -m deploy   # reads CLOJARS_USERNAME / CLOJARS_PASSWORD
+```
 
 ## Architecture (v1 target)
 
