@@ -74,3 +74,25 @@
   for paging scans."
   [db index components]
   (core/seek-datoms db index components))
+
+(defn as-of
+  "The db value as of transaction t (a t counter or a tx entity id).
+  All readers — q, pull, entity, datoms — work on the returned value."
+  [db t]
+  (core/as-of db t))
+
+(defn since
+  "A view of the db exposing only datoms asserted after t."
+  [db t]
+  (core/since db t))
+
+(defn history
+  "Every assertion and retraction ever transacted, each with its added flag."
+  [db]
+  (core/history db))
+
+(defn with
+  "Speculative transaction against a db value: returns the report
+  {:db-before :db-after :t :tx-data :tempids} without any storage effect."
+  [db tx-data]
+  (core/db-with db tx-data))

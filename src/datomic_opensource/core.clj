@@ -597,18 +597,18 @@
               touched))
     db))
 
-(defn transact
-  "Apply transaction data against the connection. Accepts list-form ops
-  ([:db/add e a v] / [:db/retract e a v] / [:db.fn/retractEntity e]) and
-  map-form entity maps, in any mix. Returns a tx report with :db-before,
-  :db-after, :tx-data, and :tempids (including :db/current-tx and any
-  \"datomic.tx\" metadata tempid). Single writer by construction here; the
-  transactor (TT9) owns serialization across processes."
-  [conn tx-data]
+(defn transact-report
+  "Pure transaction: applies tx-data against a db value and returns the
+  report {:db-before :db-after :t :tx-data :tempids :raw-datoms} WITHOUT
+  touching storage. This is the speculative path (with) and the core of
+  the write path; the transactor (TT9) owns serialization across processes.
+  :raw-datoms carries internal (attr-id) datoms for the storage log."
+  [db-before tx-data]
+  (when (::view db-before)
+    (err :db/view-not-writable "Filtered db views (since) cannot be transacted against" {:view (::view db-before)}))
   (when-not (and (vector? tx-data) (every? #(or (vector? %) (map? %)) tx-data))
     (err :transact/bad-op "Transaction data must be a vector of operations or entity maps" {:tx-data tx-data}))
-  (let [db-before @conn
-        t (inc (::t db-before))
+  (let [t (inc (::t db-before))
         tx (tx-eid t)
         temps (volatile! {tx-tempid tx})
         upsert-claimants (volatile! {})
@@ -645,13 +645,120 @@
             [db' ds]))
         db-after (register-new-entities db-stamped datoms)
         final-db (assoc db-after ::t t)]
-    (storage/append-log (::storage final-db)
-                        {:t t
-                         :datoms (mapv (fn [^Datom d] [(.e d) (.a d) (.v d) (.tx d) (.added d)])
-                                       (into datoms tx-stamp))})
-    (reset! conn final-db)
     {:db-before db-before
      :db-after final-db
+     :t t
      :tx-data (mapv (partial public-datom final-db) (into datoms tx-stamp))
+     :raw-datoms (into datoms tx-stamp)
      :tempids (-> (into {} (filter (fn [[k _]] (string? k)) @temps))
                   (assoc :db/current-tx tx))}))
+
+(defn transact
+  "Apply transaction data against the connection (list-form ops, map-form
+  entity maps, any mix) and return the tx report with :db-before,
+  :db-after, :tx-data, and :tempids. Appends to the storage log and swaps
+  the connection atom."
+  [conn tx-data]
+  (let [{:keys [db-after t raw-datoms] :as report} (transact-report @conn tx-data)]
+    (storage/append-log (::storage db-after)
+                        {:t t
+                         :datoms (mapv (fn [^Datom d] [(.e d) (.a d) (.v d) (.tx d) (.added d)])
+                                       raw-datoms)})
+    (reset! conn db-after)
+    (dissoc report :raw-datoms)))
+
+;; ---- time travel ---------------------------------------------------------------
+
+;; tx entity ids pack t into the low 42 bits (partition 2)
+(def ^:private t-bits-mask 0x3FFFFFFFFFF)
+
+(defn eid->t
+  "Extract the transaction counter from a tx entity id."
+  [e]
+  (bit-and e t-bits-mask))
+
+(defn- normalize-t [x]
+  (cond
+    (not (int? x))
+    (err :db/bad-t "t must be a counter or a tx entity id" {:t x})
+    (= 2 (eid->partition x)) (eid->t x)
+    (= 1 (eid->partition x))
+    (err :db/bad-t "Expected t or a tx entity id, got a user entity id" {:e x})
+    :else x))
+
+(defn- raw->datom [[e a v tx added]]
+  (->Datom e a v tx added))
+
+;; Allocation index (block*1024 + idx) of a user-partition entity id, for
+;; rebuilding ::next-idx during replay.
+(defn- user-alloc-idx [x]
+  (when (and (int? x) (pos? x) (= 1 (eid->partition x)))
+    (inc (+ (* (bit-and (bit-shift-right x 10) 0x3FF) 1024)
+            (bit-and x 0x3FF)))))
+
+(defn- restore-next-idx [db datoms]
+  (if-some [n (transduce (comp (mapcat (fn [^Datom d] [(.e d) (.v d)]))
+                               (keep user-alloc-idx))
+                         max 0 datoms)]
+    (assoc-in db [::next-idx 1] (max n (get-in db [::next-idx 1] 0)))
+    db))
+
+;; Rebuild a db value from the storage log up to up-to-t. history? keeps
+;; retraction entries as visible datoms (added=false) instead of applying
+;; them as removals.
+(defn- replay [storage up-to-t history?]
+  (reduce (fn [db {:keys [t datoms]}]
+            (let [datoms (mapv raw->datom datoms)
+                  db (reduce (fn [db ^Datom d]
+                               (if (or history? (.added d))
+                                 (update-indexes db conj d)
+                                 (update-indexes db disj d)))
+                             db datoms)]
+              (-> db
+                  (register-new-entities datoms)
+                  (restore-next-idx datoms)
+                  (assoc ::t t))))
+          (empty-db storage)
+          (storage/log-scan storage (inc bootstrap-t) up-to-t)))
+
+(defn as-of
+  "The db value as of transaction t (a t counter or a tx entity id)."
+  [db t]
+  (let [t (normalize-t t)]
+    (when (< t bootstrap-t)
+      (err :db/bad-t "t is before the bootstrap transaction" {:t t}))
+    (if (>= t (::t db))
+      db
+      (replay (::storage db) t false))))
+
+(defn since
+  "A view of the db exposing only datoms asserted after t (a t counter or a
+  tx entity id). Facts from t and earlier are invisible even though they
+  remain current. Views are read-only: transact/with reject them."
+  [db t]
+  (let [t (normalize-t t)]
+    (assoc
+     (reduce (fn [db index]
+               (let [{:keys [set cmp]} (index-specs index)]
+                 (assoc db set
+                        ;; datoms carry tx entity ids; tx-eid(t) is
+                        ;; monotonic in t, so compare in eid space
+                        (into (sorted-set-by cmp)
+                              (filter (fn [^Datom d] (> (.tx d) (tx-eid t)))
+                                      (get db set))))))
+             db
+             (keys index-specs))
+     ::view :since)))
+
+(defn history
+  "The db value containing every assertion and retraction ever transacted,
+  each with its added flag."
+  [db]
+  (replay (::storage db) (::t db) true))
+
+(defn db-with
+  "Speculative transaction: applies tx-data against a db value and returns
+  the report {:db-before :db-after :t :tx-data :tempids} without touching
+  storage or the connection."
+  [db tx-data]
+  (dissoc (transact-report db tx-data) :raw-datoms))

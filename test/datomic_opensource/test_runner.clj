@@ -7,6 +7,7 @@
             [datomic-opensource.query-rules-test]
             [datomic-opensource.query-test]
             [datomic-opensource.schema-test]
+            [datomic-opensource.time-travel-test]
             [datomic-opensource.storage.memory-test]))
 
 (defn -main [& _]
