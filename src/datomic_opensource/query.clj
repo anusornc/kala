@@ -1,9 +1,10 @@
 (ns datomic-opensource.query
   "Datalog query engine: pattern clauses with constants and variables, joins
-  through ref attributes (forward and reverse), :in bindings (scalar, tuple,
-  collection, relation, database), and find specs (relation, collection,
-  scalar, single string). Predicates, function expressions, rules, and
-  aggregates arrive in TT5."
+  through ref attributes (forward and reverse), predicates and function
+  expressions in :where, user-defined rules (including recursion) supplied
+  through the % input, :in bindings (scalar, tuple, collection, relation,
+  database), find specs (relation, collection, scalar, single string), and
+  aggregates with :with-aware grouping."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [datomic-opensource.core :as core]))
@@ -12,6 +13,14 @@
 
 (defn- err [kind msg data]
   (throw (ex-info msg (merge {:datomic-opensource/error kind} data))))
+
+;; ---- built-ins for predicates and function expressions ------------------------
+
+(def ^:private builtins
+  {'< < '> > '<= <= '>= >= '= = 'not= not=
+   '+ + '- - '* * 'quot quot 'mod mod 'inc inc 'dec dec
+   'str str 'count count
+   'lower-case str/lower-case 'upper-case str/upper-case})
 
 ;; ---- query parsing ----------------------------------------------------------
 
@@ -24,10 +33,9 @@
       acc)))
 
 (defn- normalize-clause [c]
-  (cond
-    (vector? c) c
-    (seq? c) (vec c)
-    :else (err :query/bad-clause "Where clauses must be vectors" {:clause c})))
+  (if (or (vector? c) (seq? c))
+    c
+    (err :query/bad-clause "Where clauses must be vectors or lists" {:clause c})))
 
 (defn- sections->query [sections]
   {:find (:find sections)
@@ -40,7 +48,68 @@
     (string? q) (recur (edn/read-string q))
     :else (sections->query (if (map? q) q (parse-vector-query q)))))
 
+;; ---- rules -------------------------------------------------------------------
+
+;; rules: [[(name ?a ?b) clause+]] keyed by [name arity]
+(defn- parse-rules [rules]
+  (when-not (sequential? rules)
+    (err :query/bad-rules "Rules must be a sequence of rule definitions" {:rules rules}))
+  (reduce (fn [acc rule]
+            (when-not (and (vector? rule) (seq? (first rule)) (>= (count rule) 2))
+              (err :query/bad-rules
+                   "A rule is [[(name args...) clause+]]" {:rule rule}))
+            (let [[rname & args] (first rule)]
+              (when-not (symbol? rname)
+                (err :query/bad-rules "Rule head must start with a name" {:rule rule}))
+              ;; store the full rule [(head) clause+] so solve-rule-body can
+              ;; destructure head and clauses
+              (update acc [rname (count args)] (fnil conj []) rule)))
+          {}
+          rules))
+
+(defn- unify-args [args tuple bindings]
+  (loop [b bindings, args args, tuple tuple]
+    (if-not (seq args)
+      b
+      (let [arg (first args) v (first tuple)]
+        (cond
+          (= arg '_) (recur b (next args) (next tuple))
+          (and (symbol? arg) (contains? b arg))
+          (when (core/value-eq (get b arg) v)
+            (recur b (next args) (next tuple)))
+          (symbol? arg) (recur (assoc b arg v) (next args) (next tuple))
+          :else (when (core/value-eq arg v)
+                  (recur b (next args) (next tuple))))))))
+
+(defn- match-rule-call [rule-sols call bindings]
+  (let [key [(first call) (count (rest call))]
+        tuples (get rule-sols key)]
+    (when (nil? tuples)
+      (err :query/unknown-rule "No rule defined" {:rule (first call) :arity (count (rest call))}))
+    (keep #(unify-args (vec (rest call)) % bindings) tuples)))
+
 ;; ---- find specs ---------------------------------------------------------------
+
+(def ^:private n-aggregates '#{min max rand sample})
+
+(def ^:private aggregate-names
+  '#{count count-distinct sum min max avg median variance std-dev rand sample})
+
+(defn- parse-aggregate [expr]
+  (let [[f & args] expr]
+    (when-not (contains? aggregate-names f)
+      (err :query/unknown-aggregate "Unknown aggregate" {:aggregate f}))
+    (cond
+      (and (contains? #{'rand 'sample} f) (= 1 (count args)))
+      (err :query/bad-aggregate "Aggregate requires a count argument" {:expr expr})
+      (and (contains? n-aggregates f) (= 2 (count args)))
+      (let [[n v] args]
+        (when-not (and (integer? n) (pos? n) (symbol? v))
+          (err :query/bad-aggregate "Expected (f n ?var)" {:expr expr}))
+        {:agg-fn f :n n :var v})
+      (and (= 1 (count args)) (symbol? (first args)))
+      {:agg-fn f :var (first args)}
+      :else (err :query/bad-aggregate "Unsupported aggregate expression" {:expr expr}))))
 
 (defn- parse-find [find-elems]
   (let [[x & more] find-elems]
@@ -59,7 +128,8 @@
           (err :query/bad-find "Collection spec requires a variable" {:find find-elems}))
 
         (and (= 1 (count x)) (symbol? (first x))) {:type :scalar :var (first x)}
-        (and (= 2 (count x)) (= '. (second x))) {:type :scalar :var (first x)}
+        (and (= 2 (count x)) (symbol? (first x)) (= '. (second x)))
+        {:type :scalar :var (first x)}
 
         (and (= 1 (count x)) (seq? (first x)))
         (let [expr (first x)]
@@ -69,6 +139,14 @@
           {:type :string :expr expr})
 
         :else (err :query/bad-find "Unsupported find specification" {:find find-elems}))
+
+      (and (some list? find-elems)
+           (not-any? vector? find-elems))
+      {:type :aggregate :els (mapv (fn [el] (if (list? el) (parse-aggregate el) el)) find-elems)}
+
+      (some list? find-elems)
+      (err :query/bad-aggregate
+           "Aggregates require the relation find form" {:find find-elems})
 
       :else (err :query/bad-find "Unsupported find specification" {:find find-elems}))))
 
@@ -147,11 +225,90 @@
               (bind-slot vs (:v d) b1)))
           datoms)))
 
+;; ---- predicates and function expressions ----------------------------------------
+
+(defn- arg-value [x bindings clause]
+  (cond
+    (= x '_) (err :query/bad-binding
+                  "Wildcard not allowed in expression arguments" {:clause clause})
+    (symbol? x) (if (contains? bindings x)
+                  (get bindings x)
+                  (err :query/unbound-var
+                       "Argument not bound by an earlier clause" {:var x :clause clause}))
+    :else x))
+
+;; Returns a COLLECTION of bindings (like match-pattern), so mapcat can
+;; concatenate results across clauses.
+(defn- apply-fn-expr [clause bindings]
+  (let [[f-expr result-slot] clause
+        [f & args] f-expr
+        f (or (get builtins f)
+              (err :query/unknown-builtin "Unknown function" {:fn f :clause clause}))
+        out (apply f (map #(arg-value % bindings clause) args))]
+    (cond
+      (or (nil? result-slot) (= result-slot '_)) (if out [bindings] nil)
+      (symbol? result-slot)
+      (cond
+        (contains? bindings result-slot)
+        (when (core/value-eq (get bindings result-slot) out) [bindings])
+        :else [(assoc bindings result-slot out)])
+      :else (err :query/bad-binding
+                 "Expression result must bind a variable" {:slot result-slot :clause clause}))))
+
+;; ---- evaluation --------------------------------------------------------------------
+
+(defn- eval-clause [db rule-sols clause bindings]
+  (cond
+    (seq? clause) (match-rule-call rule-sols clause bindings)
+    (and (vector? clause) (seq? (first clause))) (apply-fn-expr clause bindings)
+    (vector? clause) (match-pattern db (prep-pattern db clause) bindings)
+    :else (err :query/bad-clause "Unsupported where clause" {:clause clause})))
+
+(defn- run-where* [db rule-sols clauses initial-solutions]
+  (reduce (fn [solutions clause]
+            (mapcat (fn [b] (eval-clause db rule-sols clause b)) solutions))
+          initial-solutions
+          clauses))
+
+(defn- solve-rule-body [db rule-sols body]
+  (let [[head & clauses] body
+        args (vec (rest head))
+        solutions (run-where* db rule-sols clauses [{}])]
+    (map (fn [b]
+           (mapv (fn [a]
+                   (if (contains? b a)
+                     (get b a)
+                     (err :query/bad-rules
+                          "Rule head var not bound by the body" {:rule (first head) :var a})))
+                 args))
+         solutions)))
+
+;; Naive fixed point: rule bodies see every tuple derived so far; tuples are
+;; accumulated in sets, so each iteration either adds distinct tuples or the
+;; derivation is stable. This terminates while bodies only derive values that
+;; appear in the database; bodies that synthesize ever-fresh values (e.g. via
+;; function expressions) exhaust the iteration fuel and raise instead.
+(def ^:private rule-fuel 1000)
+
+(defn- solve-rules [db rules]
+  (loop [sols (into {} (map (fn [k] [k #{}]) (keys rules)))
+         fuel rule-fuel]
+    (when (zero? fuel)
+      (err :query/rule-overflow
+           "Rule evaluation did not converge" {:iterations rule-fuel :rules (mapv first (keys rules))}))
+    (let [sols' (reduce-kv (fn [acc key bodies]
+                             (update acc key
+                                     into (mapcat (fn [body]
+                                                    (solve-rule-body db acc body))
+                                                  bodies)))
+                           sols
+                           rules)]
+      (if (= sols' sols) sols (recur sols' (dec fuel))))))
+
 ;; ---- :in bindings ----------------------------------------------------------------
 
 (defn- bind-input [binding-form value]
   (cond
-    (= binding-form '$) [{'$ value}]
     (symbol? binding-form) [{binding-form value}]
     (and (vector? binding-form) (= '... (last binding-form)))
     (let [vars (vec (butlast binding-form))]
@@ -165,14 +322,7 @@
     [(zipmap binding-form value)]
     :else (err :query/bad-binding "Unsupported binding form" {:binding binding-form})))
 
-;; ---- evaluation --------------------------------------------------------------------
-
-(defn- run-where [db clauses initial-solutions]
-  (reduce (fn [solutions clause]
-            (let [pattern (prep-pattern db clause)]
-              (mapcat (fn [b] (match-pattern db pattern b)) solutions)))
-          initial-solutions
-          clauses))
+;; ---- projection -------------------------------------------------------------------
 
 (defn- dedupe-by-keys [key-vars solutions]
   (loop [solutions solutions, seen #{}, out []]
@@ -183,29 +333,79 @@
           (recur (next solutions) (conj seen k) (conj out s))))
       out)))
 
+(defn- mean-of [values]
+  (/ (double (reduce + 0 values)) (count values)))
+
+(defn- variance-of [values]
+  (let [mean (mean-of values)]
+    (/ (double (reduce + (map (fn [v] (let [d (- v mean)] (* d d))) values)))
+       (count values))))
+
+(defn- extreme [cmp values]
+  (reduce (fn [a b] (if (cmp a b) a b)) values))
+
+(defn- agg-apply [{:keys [agg-fn n var]} values]
+  (case agg-fn
+    count (count values)
+    count-distinct (count (distinct values))
+    sum (if (every? integer? values)
+          (reduce + 0 values)
+          (double (reduce + 0 values)))
+    min (if n (vec (take n (sort values))) (extreme #(neg? (compare %1 %2)) values))
+    max (if n (vec (take n (reverse (sort values)))) (extreme #(pos? (compare %1 %2)) values))
+    avg (mean-of values)
+    median (let [vs (sort values) c (count vs)]
+             (if (odd? c)
+               (nth vs (quot c 2))
+               (/ (double (+ (nth vs (dec (quot c 2))) (nth vs (quot c 2)))) 2)))
+    variance (variance-of values)
+    std-dev (Math/sqrt (variance-of values))
+    rand (vec (take n (shuffle (distinct values))))
+    sample (vec (take n (shuffle values)))))
+
+(defn- project-aggregate [els solutions with-vars]
+  (let [group-vars (vec (filter symbol? els))
+        agg-els (vec (filter map? els))
+        agg-vars (map :var agg-els)
+        dedup-key (vec (distinct (concat group-vars agg-vars (vec with-vars))))
+        deduped (dedupe-by-keys dedup-key solutions)
+        groups (group-by (fn [s] (mapv #(get s %) group-vars)) deduped)]
+    ;; group values are already the plain find els; append aggregate results
+    (map (fn [[group-values group]]
+           (into group-values
+                 (map (fn [el]
+                        (agg-apply el (keep #(get % (:var el)) group)))
+                      agg-els)))
+         groups)))
+
 (defn- project [spec solutions with-vars]
-  (let [find-vars (case (:type spec)
-                    :relation (vec (:vars spec))
-                    [(:var spec)])
-        solutions (if (seq with-vars)
-                    (dedupe-by-keys (into find-vars (vec with-vars)) solutions)
-                    solutions)]
-    (case (:type spec)
-      :relation (let [tuples (map (fn [s] (mapv #(get s %) find-vars)) solutions)]
-                  (if (seq with-vars) tuples (distinct tuples)))
-      :coll (map #(get % (:var spec)) solutions)
-      :scalar (first (map #(get % (:var spec)) solutions))
-      :string (let [[_ var] (:expr spec)]
-                (str/join " " (map #(get % var) solutions))))))
+  (if (= :aggregate (:type spec))
+    (project-aggregate (:els spec) solutions with-vars)
+    (let [find-vars (case (:type spec)
+                      :relation (vec (:vars spec))
+                      [(:var spec)])
+          solutions (if (seq with-vars)
+                      (dedupe-by-keys (into find-vars (vec with-vars)) solutions)
+                      solutions)]
+      (case (:type spec)
+        :relation (let [tuples (map (fn [s] (mapv #(get s %) find-vars)) solutions)]
+                    (if (seq with-vars) tuples (distinct tuples)))
+        :coll (map #(get % (:var spec)) solutions)
+        :scalar (first (map #(get % (:var spec)) solutions))
+        :string (let [[_ var] (:expr spec)]
+                  (str/join " " (map #(get % var) solutions)))))))
+
+;; ---- entry point --------------------------------------------------------------------
 
 (defn q
   "Run a Datalog query. `query` is a data-form vector/map or an EDN string;
-  `inputs` supply the :in bindings in order, the first usually being the db
-  bound to $."
+  `inputs` supply the :in bindings in order — the database bound to $ and,
+  when the :in clause names %, a sequence of rules."
   [query inputs]
   (let [{:keys [find in with where]} (parse-query query)
         _ (when (empty? find) (err :query/bad-query "Query needs :find" {}))
         _ (when (empty? where) (err :query/bad-query "Query needs :where" {}))
+        spec (parse-find find)
         in (vec (or (not-empty in) ['$]))
         _ (when-not (= (count in) (count inputs))
             (err :query/arity
@@ -215,14 +415,17 @@
                (err :query/no-db "Query requires a database bound to $" {}))
         _ (when-not (map? db)
             (err :query/no-db "$ must be a db value" {}))
+        rules (when-let [rs (some (fn [[f v]] (when (= f '%) v)) pairs)]
+                (parse-rules rs))
+        rule-sols (if (seq rules) (solve-rules db rules) {})
         initial-solutions
         (reduce (fn [sols [form val]]
-                  (if (= form '$)
+                  (if (contains? #{'$ '%} form)
                     sols
                     (for [s sols
                           b (bind-input form val)]
                       (merge s b))))
                 [{}]
                 pairs)
-        solutions (run-where db where initial-solutions)]
-    (project (parse-find find) solutions (vec with))))
+        solutions (run-where* db rule-sols where initial-solutions)]
+    (project spec solutions (vec with))))
