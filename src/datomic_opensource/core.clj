@@ -68,9 +68,17 @@
                   (cmp-field cx cy))]
           (if (zero? c) (recur (rest ks)) c))))))
 
-(def ^:private eavt-cmp (cmp-by [:e :a :v :tx]))
-(def ^:private aevt-cmp (cmp-by [:a :e :v :tx]))
-(def ^:private avet-cmp (cmp-by [:a :v :e :tx]))
+;; One spec per index drives everything index-shaped below: the comparator
+;; field order, the db key of its sorted set, and — derived from :fields
+;; (everything before :tx, which every index sorts last) — prefix bounds,
+;; prefix matching, and component resolution. Adding an index is one entry
+;; here, not a case arm in five places.
+(def ^:private index-specs
+  {:eavt {:fields [:e :a :v :tx] :set ::eavt :cmp (cmp-by [:e :a :v :tx])}
+   :aevt {:fields [:a :e :v :tx] :set ::aevt :cmp (cmp-by [:a :e :v :tx])}
+   :avet {:fields [:a :v :e :tx] :set ::avet :cmp (cmp-by [:a :v :e :tx])}})
+
+(def ^:private all-index-sets (mapv :set (vals index-specs)))
 
 ;; ---- value types ------------------------------------------------------------
 
@@ -166,18 +174,20 @@
                                      (let [id (attr-eid (:db/ident spec))]
                                        [(:db/ident spec) (attr-map spec id)]))
                                    meta-attrs))
-        schema-by-id (into {} (map (fn [[ident m]] [(:id m) m]) schema-by-ident))]
-    {::storage storage
-     ::t bootstrap-t
-     ::eavt (into (sorted-set-by eavt-cmp) datoms)
-     ::aevt (into (sorted-set-by aevt-cmp) datoms)
-     ::avet (into (sorted-set-by avet-cmp) datoms)
-     ::next-idx {0 next-part-0-idx
-                 1 0}
-     ::idents (merge (into {} (map (fn [spec] [(:db/ident spec) (attr-eid (:db/ident spec))]) meta-attrs))
-                     (enum-eids))
-     ::schema-by-ident schema-by-ident
-     ::schema-by-id schema-by-id}))
+        schema-by-id (into {} (map (fn [[ident m]] [(:id m) m]) schema-by-ident))
+        index-sets (into {}
+                         (map (fn [[index {:keys [set cmp]}]]
+                                [set (into (sorted-set-by cmp) datoms)]))
+                         index-specs)]
+    (merge index-sets
+           {::storage storage
+            ::t bootstrap-t
+            ::next-idx {0 next-part-0-idx
+                        1 0}
+            ::idents (merge (into {} (map (fn [spec] [(:db/ident spec) (attr-eid (:db/ident spec))]) meta-attrs))
+                            (enum-eids))
+            ::schema-by-ident schema-by-ident
+            ::schema-by-id schema-by-id})))
 
 (defn entid [db ident-or-eid]
   (if (int? ident-or-eid)
@@ -190,33 +200,20 @@
 
 ;; ---- index reads --------------------------------------------------------------
 
-(def ^:private comp-fields
-  {:eavt [:e :a :v]
-   :aevt [:a :e :v]
-   :avet [:a :v :e]})
-
 (defn- low-bound [index comps]
-  (let [minv MIN-V
-        mint Long/MIN_VALUE]
-    (case index
-      :eavt (case (count comps)
-              0 (->Datom mint minv minv mint true)
-              1 (->Datom (comps 0) minv minv mint true)
-              2 (->Datom (comps 0) (comps 1) minv mint true)
-              3 (->Datom (comps 0) (comps 1) (comps 2) mint true))
-      :aevt (case (count comps)
-              0 (->Datom mint minv minv mint true)
-              1 (->Datom mint (comps 0) minv mint true)
-              2 (->Datom (comps 1) (comps 0) minv mint true)
-              3 (->Datom (comps 1) (comps 0) (comps 2) mint true))
-      :avet (case (count comps)
-              0 (->Datom mint minv minv mint true)
-              1 (->Datom mint (comps 0) minv mint true)
-              2 (->Datom mint (comps 0) (comps 1) mint true)
-              3 (->Datom (comps 2) (comps 0) (comps 1) mint true)))))
+  (let [{:keys [fields]} (index-specs index)
+        n (count comps)
+        _ (when (> n 3)
+            (err :datoms/bad-components
+                 "Index prefixes have at most e/a/v components" {:index index :components comps}))
+        field-pos (zipmap fields (range))
+        slot (fn [field fill]
+               (let [i (field-pos field)]
+                 (if (< i n) (comps i) fill)))]
+    (->Datom (slot :e MIN-V) (slot :a MIN-V) (slot :v MIN-V) (slot :tx Long/MIN_VALUE) true)))
 
 (defn- prefix-pred [index comps]
-  (let [ks (->> (comp-fields index) (take (count comps)))]
+  (let [ks (take (count comps) (:fields (index-specs index)))]
     (fn [d]
       (every? identity
               (map (fn [k c]
@@ -235,8 +232,7 @@
   (get (::schema-by-ident db) ident))
 
 (defn index-slice [db index comps]
-  (let [index-set (case index :eavt (::eavt db) :aevt (::aevt db) :avet (::avet db))]
-    (slice index-set index comps)))
+  (slice (get db (:set (index-specs index))) index comps))
 
 (defn value-eq [x y]
   (val= x y))
@@ -252,6 +248,7 @@
                    reverse
                    vec)
         n (count comps)
+        fields (vec (butlast (:fields (index-specs index))))
         a-res (fn [x]
                 (:id (or (lookup-attr db x)
                          (err :transact/unknown-attribute "Unknown attribute" {:attribute x}))))
@@ -261,26 +258,26 @@
                   (if (and (keyword? v) a (= :db.type/ref (:value-type a)))
                     (or (entid db v)
                         (err :transact/unknown-ident "No entity with ident" {:ident v}))
-                    v)))]
-    (vec (case index
-           :eavt (case n
-                   0 []
-                   1 [(e-res (comps 0))]
-                   2 [(e-res (comps 0)) (a-res (comps 1))]
-                   3 [(e-res (comps 0)) (a-res (comps 1)) (v-res (a-res (comps 1)) (comps 2))])
-           :aevt (case n
-                   0 []
-                   1 [(a-res (comps 0))]
-                   2 [(a-res (comps 0)) (e-res (comps 1))]
-                   3 [(a-res (comps 0)) (e-res (comps 1)) (v-res (a-res (comps 0)) (comps 2))])
-           :avet (case n
-                   0 []
-                   1 [(a-res (comps 0))]
-                   2 [(a-res (comps 0)) (v-res (a-res (comps 0)) (comps 1))]
-                   3 [(a-res (comps 0)) (v-res (a-res (comps 0)) (comps 1)) (e-res (comps 2))])))))
+                    v)))
+        ;; resolve :a and :e slots first (:v needs the :a slot's attr id)
+        pass1 (reduce (fn [acc i]
+                        (assoc acc i
+                               (case (fields i)
+                                 :a (a-res (comps i))
+                                 :e (e-res (comps i))
+                                 :v ::v-pending)))
+                      (vec (repeat n nil))
+                      (range n))
+        a-id (first (keep-indexed (fn [i r] (when (= :a (fields i)) r)) pass1))]
+    (reduce (fn [acc i]
+              (if (= ::v-pending (acc i))
+                (assoc acc i (v-res a-id (comps i)))
+                acc))
+            pass1
+            (range n))))
 
 (defn datoms [db index components]
-  (when-not (contains? comp-fields index)
+  (when-not (contains? index-specs index)
     (err :datoms/unknown-index "Unknown index" {:index index}))
   (let [comps (resolve-components db index components)]
     (map (partial public-datom db) (index-slice db index comps))))
@@ -386,10 +383,9 @@
               (err :transact/bad-entity "Cannot retract using a tempid" {:v x})))))
 
 (defn- update-indexes [db f ^Datom d]
-  (-> db
-      (update ::eavt f d)
-      (update ::aevt f d)
-      (update ::avet f d)))
+  (reduce (fn [db set-key] (update db set-key f d))
+          db
+          all-index-sets))
 
 (defn- add-datom [db ^Datom d]
   [(update-indexes db conj d)
