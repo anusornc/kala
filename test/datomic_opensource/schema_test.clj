@@ -106,7 +106,7 @@
     (let [{:keys [tempids]} (api/transact conn [[:db/add "e" :t/alias "A"]])
           eid (get tempids "e")
           {:keys [tx-data]} (api/transact conn [[:db/add eid :t/alias "A"]])]
-      (is (empty? tx-data))
+      (is (= [:db/txInstant] (mapv :a tx-data)))
       (is (= ["A"] (mapv :v (api/datoms (api/db conn) :eavt [eid])))))))
 
 ;; ---- uniqueness and upserts -------------------------------------------------
@@ -134,7 +134,7 @@
     (let [{:keys [tempids]} (api/transact conn [[:db/add "a" :t/email "x@y.io"]])
           eid1 (get tempids "a")
           {:keys [tx-data]} (api/transact conn [[:db/add eid1 :t/email "x@y.io"]])]
-      (is (empty? tx-data)))))
+      (is (= [:db/txInstant] (mapv :a tx-data))))))
 
 (deftest concrete-entity-cannot-claim-another-identity
   (let [conn (fresh-conn)]
@@ -166,7 +166,7 @@
                     (api/transact conn [[:db/add "e2" :t/sku "W-1"]]))
       (testing "the holder may re-assert its own value"
         (let [{:keys [tx-data]} (api/transact conn [[:db/add eid1 :t/sku "W-1"]])]
-          (is (empty? tx-data)))))))
+          (is (= [:db/txInstant] (mapv :a tx-data))))))))
 
 ;; ---- component cascade ------------------------------------------------------
 
@@ -197,9 +197,10 @@
           {:keys [tx-data]} (api/transact conn [[:db.fn/retractEntity order]])
           db (api/db conn)]
       (testing "every datom of the tree plus incoming refs is retracted"
-        ;; order: number + items; item: sku + part; part: id; referrer's incoming ref
-        (is (= 6 (count tx-data)))
-        (is (every? #(false? (:added %)) tx-data)))
+        ;; order: number + items; item: sku + part; part: id; referrer's
+        ;; incoming ref; plus the transactor's :db/txInstant stamp
+        (is (= 7 (count tx-data)))
+        (is (= 6 (count (filter #(false? (:added %)) tx-data)))))
       (testing "the whole component tree is gone"
         (is (empty? (api/datoms db :eavt [order])))
         (is (empty? (api/datoms db :eavt [item])))
@@ -207,6 +208,6 @@
       (testing "the referrer survives; its incoming reference is retracted"
         (is (empty? (api/datoms db :eavt [friend (api/entid db :person/friend)])))
         (is (seq (api/datoms db :eavt [friend]))))
-      (testing "retracting a second time is a noop"
+      (testing "retracting a second time is a noop (only the stamp)"
         (let [{:keys [tx-data]} (api/transact conn [[:db.fn/retractEntity order]])]
-          (is (empty? tx-data)))))))
+          (is (= [:db/txInstant] (mapv :a tx-data))))))))

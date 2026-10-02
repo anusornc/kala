@@ -138,8 +138,11 @@
                       (:db/isComponent spec) (conj [:db/add e :db/isComponent true])
                       (:db/doc spec) (conj [:db/add e :db/doc (:db/doc spec)]))))
                 meta-attrs)
-        enum-tuples (map (fn [k] [:db/add (get enums k) :db/ident k]) enum-idents)]
-    (into attr-tuples enum-tuples)))
+        enum-tuples (map (fn [k] [:db/add (get enums k) :db/ident k]) enum-idents)
+        ;; the genesis transaction is itself a transaction entity, stamped
+        ;; deterministically so a rebuilt db (TT8 recovery) matches
+        genesis-meta [[:db/add (tx-eid bootstrap-t) :db/txInstant (java.util.Date. 0)]]]
+    (into attr-tuples (into enum-tuples genesis-meta))))
 
 (defn- attr-map [{:db/keys [ident valueType cardinality unique isComponent]} id]
   {:id id
@@ -286,6 +289,54 @@
 
 (def ^:private retract-entity-ops #{:db.fn/retractEntity :db/retractEntity})
 
+;; The reserved tempid that names the transaction entity itself, so tx
+;; metadata is ordinary map-form data: {:db/id "datomic.tx" :db/txInstant ...}
+(def ^:private tx-tempid "datomic.tx")
+
+;; Map form -> list-form ops. Returns [eid ops]. Nested maps are allowed only
+;; under component attributes (Datomic semantics); cardinality-many values
+;; given as collections expand to one op per element. Entities without :db/id
+;; get an opaque internal tempid that can never collide with user tempids.
+(defn- expand-adds [eid k v]
+  (mapv (fn [x] [eid k x]) v))
+
+(defn- parse-entity-map [db m]
+  (let [eid (or (:db/id m) (Object.))]
+    (loop [[[k v] & more] (seq (dissoc m :db/id))
+           adds []
+           child-ops []]
+      (if-not k
+        [eid (into (mapv (fn [[e a v]] [:db/add e a v]) adds) child-ops)]
+        (let [attr (or (lookup-attr db k)
+                       (err :transact/unknown-attribute "Unknown attribute" {:attribute k}))
+              many? (= :db.cardinality/many (:cardinality attr))
+              ref? (= :db.type/ref (:value-type attr))
+              nest! (fn [cm]
+                      (when-not (:component? attr)
+                        (err :transact/nested-map-requires-component
+                             "Nested maps require a component attribute" {:attribute k}))
+                      (parse-entity-map db cm))]
+          (cond
+            (and ref? (map? v))
+            (let [[child cops] (nest! v)]
+              (recur more (conj adds [eid k child]) (into child-ops cops)))
+
+            (and ref? (coll? v))
+            (if (every? map? v)
+              (let [parsed (mapv nest! v)]
+                (recur more
+                       (into adds (map (fn [[child _]] [eid k child]) parsed))
+                       (into child-ops (mapcat second parsed))))
+              (if many?
+                (recur more (into adds (expand-adds eid k v)) child-ops)
+                (recur more (conj adds [eid k v]) child-ops)))
+
+            (and (coll? v) many?)
+            (recur more (into adds (expand-adds eid k v)) child-ops)
+
+            :else
+            (recur more (conj adds [eid k v]) child-ops)))))))
+
 (defn- validate-op [op]
   (when-not (vector? op)
     (err :transact/bad-op "Operations must be vectors" {:op op}))
@@ -319,8 +370,9 @@
       (int? x) (if (pos? x)
                  [db x]
                  (err :transact/bad-entity "Entity id must be positive" {:v x}))
-      :else (err :transact/bad-entity
-                 "Ref value must be an entity id, tempid, or ident" {:v x}))))
+      :else (if (= :db/add kind)
+              (ensure-temp db x)
+              (err :transact/bad-entity "Cannot retract using a tempid" {:v x})))))
 
 (defn- update-indexes [db f ^Datom d]
   (-> db
@@ -409,7 +461,8 @@
           :op op})))
 
 (defn- resolve-e [db kind e unique-holder unique {:keys [temps ensure-temp upsert-claimants]} op]
-  (if (string? e)
+  (if (or (string? e) (and (not (int? e)) (not (keyword? e))))
+    ;; user tempid (string) or internal opaque tempid from map form
     (if (= :db/retract kind)
       (err :transact/bad-entity "Cannot retract using a tempid" {:op op})
       (let [allocated (get @temps e)]
@@ -500,17 +553,19 @@
     db))
 
 (defn transact
-  "Apply tx-data (a vector of [:db/add e a v] / [:db/retract e a v] operations)
-  against the connection. Single writer by construction here; the transactor
-  (TT9) owns serialization across processes. Returns a tx report with
-  :db-before, :db-after, :tx-data, and :tempids."
+  "Apply transaction data against the connection. Accepts list-form ops
+  ([:db/add e a v] / [:db/retract e a v] / [:db.fn/retractEntity e]) and
+  map-form entity maps, in any mix. Returns a tx report with :db-before,
+  :db-after, :tx-data, and :tempids (including :db/current-tx and any
+  \"datomic.tx\" metadata tempid). Single writer by construction here; the
+  transactor (TT9) owns serialization across processes."
   [conn tx-data]
-  (when-not (and (vector? tx-data) (every? vector? tx-data))
-    (err :transact/bad-op "Transaction data must be a vector of operations" {:tx-data tx-data}))
+  (when-not (and (vector? tx-data) (every? #(or (vector? %) (map? %)) tx-data))
+    (err :transact/bad-op "Transaction data must be a vector of operations or entity maps" {:tx-data tx-data}))
   (let [db-before @conn
         t (inc (::t db-before))
         tx (tx-eid t)
-        temps (volatile! {})
+        temps (volatile! {tx-tempid tx})
         upsert-claimants (volatile! {})
         ensure-temp (fn [db tempid]
                       (if-some [e (get @temps tempid)]
@@ -523,19 +578,35 @@
              :temps temps
              :ensure-temp ensure-temp
              :upsert-claimants upsert-claimants}
+        ops (mapcat (fn [x]
+                      (if (map? x)
+                        (second (parse-entity-map db-before x))
+                        [x]))
+                    tx-data)
         [db-after datoms]
         (reduce (fn [[db acc] op]
                   (let [[db' ds] (apply-op db txn (validate-op op))]
                     [db' (into acc ds)]))
                 [db-before []]
-                tx-data)
-        db-after (register-new-entities db-after datoms)
+                ops)
+        ;; Every transaction entity carries :db/txInstant unless the tx itself
+        ;; supplied one via metadata. The stamp is part of the transaction: it
+        ;; goes to the log, the indexes, and the report's :tx-data.
+        [db-stamped tx-stamp]
+        (if (current-datom-any-v db-after tx (attr-eid :db/txInstant))
+          [db-after []]
+          (let [attr (get (::schema-by-id db-after) (attr-eid :db/txInstant))
+                [db' ds] (apply-add db-after tx attr tx (java.util.Date.))]
+            [db' ds]))
+        db-after (register-new-entities db-stamped datoms)
         final-db (assoc db-after ::t t)]
     (storage/append-log (::storage final-db)
                         {:t t
-                         :datoms (mapv (fn [^Datom d] [(.e d) (.a d) (.v d) (.tx d) (.added d)]) datoms)})
+                         :datoms (mapv (fn [^Datom d] [(.e d) (.a d) (.v d) (.tx d) (.added d)])
+                                       (into datoms tx-stamp))})
     (reset! conn final-db)
     {:db-before db-before
      :db-after final-db
-     :tx-data (mapv (partial public-datom final-db) datoms)
-     :tempids (assoc @temps :db/current-tx tx)}))
+     :tx-data (mapv (partial public-datom final-db) (into datoms tx-stamp))
+     :tempids (-> (into {} (filter (fn [[k _]] (string? k)) @temps))
+                  (assoc :db/current-tx tx))}))

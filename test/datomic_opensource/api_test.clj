@@ -60,8 +60,8 @@
       (testing "the report exposes the tx entity"
         (is (pos? (get tempids :db/current-tx)))
         (is (every? #(= (get tempids :db/current-tx) (:tx %)) tx-data)))
-      (testing "tx report carries the produced datom"
-        (is (= 1 (count tx-data)))
+      (testing "tx report carries the produced datom (plus the transactor's :db/txInstant stamp)"
+        (is (= 2 (count tx-data)))
         (let [d (first tx-data)]
           (is (= eid (:e d)))
           (is (= :person/name (:a d)))
@@ -84,8 +84,8 @@
     (let [{:keys [tempids]} (api/transact conn [[:db/add "e1" :person/name "A"]])
           eid (get tempids "e1")
           {:keys [tx-data]} (api/transact conn [[:db/add eid :person/name "B"]])]
-      (testing "replace emits retract-then-add"
-        (is (= [false true] (mapv :added tx-data))))
+      (testing "replace emits retract-then-add (plus the txInstant stamp)"
+        (is (= [false true true] (mapv :added tx-data))))
       (testing "only the latest value is current"
         (is (= ["B"] (mapv :v (api/datoms (api/db conn) :eavt [eid]))))))))
 
@@ -95,7 +95,8 @@
     (let [{:keys [tempids]} (api/transact conn [[:db/add "e1" :person/name "A"]])
           eid (get tempids "e1")
           {:keys [tx-data]} (api/transact conn [[:db/add eid :person/name "A"]])]
-      (is (empty? tx-data)))))
+      (testing "no user datoms; only the txInstant stamp"
+        (is (= [:db/txInstant] (mapv :a tx-data)))))))
 
 (deftest retract-removes-fact
   (let [conn (fresh-conn)]
@@ -103,12 +104,12 @@
     (let [{:keys [tempids]} (api/transact conn [[:db/add "e1" :person/name "Alice"]])
           eid (get tempids "e1")]
       (let [{:keys [tx-data]} (api/transact conn [[:db/retract eid :person/name "Alice"]])]
-        (is (= 1 (count tx-data)))
+        (is (= 2 (count tx-data)))
         (is (false? (:added (first tx-data))))
         (is (empty? (api/datoms (api/db conn) :eavt [eid]))))
-      (testing "retracting a non-existent fact is a noop"
+      (testing "retracting a non-existent fact is a noop (only the stamp remains)"
         (let [{:keys [tx-data]} (api/transact conn [[:db/retract eid :person/name "Ghost"]])]
-          (is (empty? tx-data)))))))
+          (is (= [:db/txInstant] (mapv :a tx-data))))))))
 
 (deftest cardinality-many-accumulates-and-retracts-selectively
   (let [conn (fresh-conn)]
