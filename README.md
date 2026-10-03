@@ -20,9 +20,22 @@ clojure -M:bench                # 200 and 2000 entities
 clojure -M:bench 5000 20000     # custom entity counts
 ```
 
-Runs our peer engine and DataScript on identical seed data, cross-checks
-that both engines return the same query results, then prints ingest and
-query latencies. Dependencies (criterium, datascript) are bench-only.
+Runs our peer engine, DataScript, and original Datomic (com.datomic/peer,
+embedded via datomic:mem) on identical seed data, cross-checks that all
+engines return the same query results, then prints ingest and query
+latencies. Dependencies (criterium, datascript, com.datomic/peer) are
+bench-only.
+
+Methodology: query latencies are steady-state — criterium warms up, and the
+pre-timing cross-check warms each engine's first-touch code paths. Engine
+setup (connection, schema transact — noticeable for original Datomic's peer
+startup) happens before any timing and is excluded from every number. Ingest
+is cold single-pass wall clock over batched transactions. The datoms-in-store
+totals include engine-internal bookkeeping (schema and transaction datoms),
+so they differ by engine; the cross-check compares query results, not totals.
+The Datomic engine is peer-only; its API deviations from the other engines
+are recorded in
+[bench/datomic_opensource/bench/datomic_peer.clj](bench/datomic_opensource/bench/datomic_peer.clj).
 
 ## Launch a transactor
 

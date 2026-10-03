@@ -1,28 +1,33 @@
 (ns datomic-opensource.bench
-  "Benchmark harness: internal baselines plus a DataScript comparison, run
-  against identical seed data and identical workloads. Before timing, both
-  engines answer the same queries and the result sets are cross-checked —
-  the harness doubles as an engine-correctness cross-check.
+  "Benchmark harness: internal baselines plus DataScript and original-Datomic
+  comparisons, run against identical seed data and identical workloads.
+  Before timing, all engines answer the same queries and the result sets are
+  cross-checked — the harness doubles as an engine-correctness cross-check.
 
   Run:         clojure -M:bench            (200 and 2000 entities)
   Custom size: clojure -M:bench 5000
 
   Engines are pluggable maps ({:name :setup :transact-batch :q
-  :datoms-count}); an original-Datomic adapter can be added without
-  redesign. Dependencies (criterium, datascript) live under the :bench
-  alias only — the release jar is unchanged."
-  (:require [criterium.core :as crit]
+  :datoms-count}). Dependencies (criterium, datascript, com.datomic/peer)
+  live under the :bench alias only — the release jar is unchanged."
+  (:require [clojure.string :as str]
+            [criterium.core :as crit]
             [datascript.core :as d]
-            [datomic-opensource.api :as api]))
+            [datomic-opensource.api :as api]
+            [datomic-opensource.bench.datomic-peer :as peer]))
 
 (def ^:private batch-size 200)
 (def ^:private friend-batch-size 500)
 
 (def ^:private schema-tx
+  ;; every attribute carries :db/cardinality — original Datomic requires it
+  ;; on all schema attributes, and one is what the workloads actually do
   [[:db/add "schema-name" :db/ident :person/name]
    [:db/add "schema-name" :db/valueType :db.type/string]
+   [:db/add "schema-name" :db/cardinality :db.cardinality/one]
    [:db/add "schema-age" :db/ident :person/age]
    [:db/add "schema-age" :db/valueType :db.type/long]
+   [:db/add "schema-age" :db/cardinality :db.cardinality/one]
    [:db/add "schema-friend" :db/ident :person/friend]
    [:db/add "schema-friend" :db/valueType :db.type/ref]
    [:db/add "schema-friend" :db/cardinality :db.cardinality/one]])
@@ -110,11 +115,11 @@
 ;; ---- runner ---------------------------------------------------------------------
 
 (defn run-bench
-  "Run the full suite for n entities across both engines; prints a results
+  "Run the full suite for n entities across all engines; prints a results
   table."
   [n]
-  (println (str "\n=== benchmark: " n " entities, both engines, memory storage ===\n"))
-  (let [engines [(os-engine) (ds-engine)]
+  (println (str "\n=== benchmark: " n " entities, all engines, memory storage ===\n"))
+  (let [engines [(os-engine) (ds-engine) (peer/engine schema-tx)]
         results (mapv (fn [engine]
                         (println (str "- " (:name engine)))
                         (let [conn ((:setup engine))
@@ -135,9 +140,18 @@
                           (println (str "  datoms in store: " ((:datoms-count engine) conn)))
                           {:engine engine :conn conn :ingest-secs ingest-secs}))
                       engines)
-        checks (mapv (fn [{:keys [engine conn]}] (cross-check engine conn)) results)]
+        checks (mapv (fn [{:keys [engine conn]}] (cross-check engine conn)) results)
+        ;; the first engine is the reference; any other engine whose
+        ;; value sets diverge is named so the mismatch is actionable
+        reference (first checks)
+        diverging (for [[engine check] (map vector engines checks)
+                        :when (not= check reference)]
+                    (:name engine))]
     (println (str "\n  cross-check: simple/join value sets and filtered count "
-                  (if (= (checks 0) (checks 1)) "MATCH across engines" "DIVERGE — timings below are meaningless")))
+                  (if (seq diverging)
+                    (str "DIVERGE for " (str/join ", " diverging) " — timings below are meaningless")
+                    (str "MATCH across " (count engines)
+                         " engines (reference: " (:name (first engines)) ")"))))
     (println "\n| benchmark | engine | mean / total |")
     (println "|---|---|---|")
     (doseq [{:keys [engine conn ingest-secs]} results]
