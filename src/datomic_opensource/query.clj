@@ -311,14 +311,85 @@
           initial-solutions
           matchers))
 
+;; ---- clause ordering (ADR-0001) -------------------------------------------------
+;; Clauses execute in an order computed from binding dependencies: predicates
+;; and function expressions require their argument variables to be bound first;
+;; pattern and rule-call clauses require nothing. Beyond that hard constraint
+;; the order is a performance choice: a greedy pass prefers, among eligible
+;; clauses, those that bind nothing new (pure filters) and then the most
+;; anchored ones (constants, concrete attributes, already-bound variables),
+;; with written order breaking ties. Solution multisets are order-invariant —
+;; conjunctive evaluation with deterministic expressions — so the result set
+;; is unaffected; row order is unspecified by contract.
+
+(defn- slot-var [s]
+  (when (and (symbol? s) (not= s '_)) s))
+
+(defn- clause-info [clause]
+  (cond
+    (seq? clause)
+    (let [args (rest clause)]
+      {:provides (into #{} (keep slot-var) args)
+       :requires #{}
+       :anchors (count (remove symbol? args))})
+
+    (and (vector? clause) (seq? (first clause)))
+    (let [[f-expr result] clause
+          [_ & args] f-expr]
+      {:provides (if-let [v (slot-var result)] #{v} #{})
+       :requires (into #{} (keep slot-var) args)
+       :anchors 0})
+
+    (vector? clause)
+    (let [[e a v] (pad3 clause)
+          const-slot? (fn [s] (and (not (symbol? s)) (not= s '_)))]
+      {:provides (into #{} (keep slot-var) [e v])
+       :requires #{}
+       :anchors (count (filter identity
+                               [(const-slot? e) (const-slot? v) (not= a '_)]))})
+
+    :else {:provides #{} :requires #{} :anchors 0}))
+
+(defn- plan-order [matchers infos initial-vars]
+  (loop [remaining (vec (range (count matchers)))
+         bound initial-vars
+         order []]
+    (if-some [i (first remaining)]
+      (let [eligible (filter (fn [i] (every? bound (:requires (infos i)))) remaining)
+            ;; nothing eligible means a predicate's arguments are bound by no
+            ;; clause: keep written order and let :query/unbound-var raise
+            pick (if (empty? eligible)
+                   i
+                   (apply max-key
+                          (fn [i]
+                            (let [{:keys [provides anchors]} (infos i)]
+                              ;; filters (bind nothing new) outrank anchored
+                              ;; expansions; the offset dominates any realistic
+                              ;; anchor/var count
+                              (+ (if (every? bound provides) 1000000 0)
+                                 anchors
+                                 (count (filter bound provides)))))
+                          eligible))]
+        (recur (filterv #(not= % pick) remaining)
+               (into bound (:provides (infos pick)))
+               (conj order pick)))
+      (mapv matchers order))))
+
+(defn- compile-and-plan [db clauses initial-vars]
+  (let [matchers (mapv #(compile-clause db %) clauses)
+        infos (mapv clause-info clauses)]
+    (plan-order matchers infos initial-vars)))
+
 (defn- run-where* [db rule-sols clauses initial-solutions]
-  (run-matches rule-sols (mapv #(compile-clause db %) clauses) initial-solutions))
+  (run-matches rule-sols
+               (compile-and-plan db clauses (into #{} (mapcat keys) initial-solutions))
+               initial-solutions))
 
 (defn- compile-rule-body [db body]
   (let [[head & clauses] body]
     {:rule-name (first head)
      :args (vec (rest head))
-     :matchers (mapv #(compile-clause db %) clauses)}))
+     :matchers (compile-and-plan db clauses #{})}))
 
 (defn- solve-rule-body [db rule-sols compiled-body]
   (let [{:keys [rule-name args matchers]} compiled-body

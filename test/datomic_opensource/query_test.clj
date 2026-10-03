@@ -119,6 +119,31 @@
                                                   [?p :person/age ?age]]
                                     [["Alice" 30] ["Carol" 30]]))))))))
 
+;; ADR-0001: clauses execute in analyzed order; the result set is the
+;; contract, row order is unspecified.
+(deftest clauses-run-in-analyzed-order
+  (let [conn (load-fixture!)]
+    (testing "a function expression may consume a variable bound by a later-written clause"
+      (is (= #{["Alice" 31] ["Bob" 26] ["Carol" 31]}
+             (set (q-one conn '[:find ?n ?d
+                                :where [(inc ?a) ?d]
+                                       [?p :person/age ?a]
+                                       [?p :person/name ?n]])))))
+    (testing "an argument bound by no clause still raises :query/unbound-var"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Argument not bound"
+                            (q-one conn '[:find ?n :where [(> ?a 3)] [_ :person/name ?n]]))))
+    (testing "written order does not change the result set"
+      (is (= (set (q-one conn '[:find ?fn :where [?p :person/name "Alice"]
+                                               [?p :person/friend ?f]
+                                               [?f :person/name ?fn]]))
+             (set (q-one conn '[:find ?fn :where [?f :person/name ?fn]
+                                                [?p :person/friend ?f]
+                                                [?p :person/name "Alice"]]))))
+      (is (= (set (q-one conn '[:find ?n :where [?p :person/age 30]
+                                                [?p :person/name ?n]]))
+             (set (q-one conn '[:find ?n :where [?p :person/name ?n]
+                                                [?p :person/age 30]])))))))
+
 (deftest find-specs-shape-the-result
   (let [conn (load-fixture!)
         names-relation (q-one conn '[:find ?n :where [_ :person/name ?n]])]
