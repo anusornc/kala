@@ -11,3 +11,10 @@ Rejected for this wave: replacing sorted-set-by with DataScript-style sorted arr
 mutated by the transaction path and shared by datoms/seek-datoms/time-travel, so a representation
 swap has much larger blast radius than the ≤2x-of-DataScript bar requires. Revisit if a later wave
 targets outright wins at large n.
+
+Amendment (same wave, after measurement): meeting the bar needed sub-µs point lookups, which the
+sorted-set machinery cannot give (every seek walks tree nodes through a comparator). We added
+per-attribute derived read views — a flat vector of the attribute's slice plus hash maps for
+[a v]/[e a] lookups — cached outside db values in a weak map keyed by the db value. Sorted sets
+remain the source of truth and the public datoms/seek-datoms/time-travel paths are untouched; the
+views are a read cache, not a representation change, and equal db values legitimately share views.

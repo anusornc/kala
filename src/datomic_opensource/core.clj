@@ -252,7 +252,7 @@
 ;; ---- per-attribute read views (query engine) ----------------------------------
 ;; Sorted sets stay the source of truth (transactions, public datoms, time
 ;; travel). The query engine's per-solution index reads go through views that
-;; are pure functions of one attribute's datom segment: a flat vector for
+;; are pure functions of one attribute's slice of an index: a flat vector for
 ;; scans, and hash maps for [a v] / [e a] point lookups.
 ;;
 ;; The cache lives OUTSIDE db values, keyed by the value itself in a weak
@@ -263,38 +263,40 @@
 ;; Clojure maps cache their hashCode, so the equality-keyed lookup is O(1)
 ;; after the first touch of a db value.
 
-(def ^:private ^java.util.Map array-caches
+(def ^:private ^java.util.Map view-caches
   (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
 
-(defn- arrays-atom [db]
-  (locking array-caches
-    (or (.get array-caches db)
+(defn- db-views [db]
+  (locking view-caches
+    (or (.get view-caches db)
         (let [a (atom {})]
-          (.put array-caches db a)
+          (.put view-caches db a)
           a))))
 
-(defn- attr-segment-vec [db index a-id]
+(defn- attr-vec
+  "The attribute's datoms as a flat vector in index order."
+  [db index a-id]
   (let [build (fn [] (vec (slice (get db (:set (index-specs index))) index [a-id])))
-        a (arrays-atom db)
+        a (db-views db)
         k [index a-id]]
     (or (get @a k)
         (let [v (build)]
           (swap! a assoc k v)
           v))))
 
-(defn- segment-vmap [db a-id]
-  (let [a (arrays-atom db)
+(defn- attr-vmap [db a-id]
+  (let [a (db-views db)
         k [:vmap a-id]]
     (or (get @a k)
-        (let [m (group-by :v (attr-segment-vec db :aevt a-id))]
+        (let [m (group-by :v (attr-vec db :aevt a-id))]
           (swap! a assoc k m)
           m))))
 
-(defn- segment-emap [db a-id]
-  (let [a (arrays-atom db)
+(defn- attr-emap [db a-id]
+  (let [a (db-views db)
         k [:emap a-id]]
     (or (get @a k)
-        (let [m (group-by :e (attr-segment-vec db :aevt a-id))]
+        (let [m (group-by :e (attr-vec db :aevt a-id))]
           (swap! a assoc k m)
           m))))
 
@@ -304,19 +306,21 @@
   (get (::schema-by-ident db) ident))
 
 (defn attr-datoms-vec [db a-id]
-  (attr-segment-vec db :aevt a-id))
+  (attr-vec db :aevt a-id))
 
 (defn value-datoms
-  "All datoms of attribute a-id whose value is v. Hash lookup with a
-  content-equality fallback (byte-array values cannot be hash keys)."
+  "All datoms of attribute a-id whose value is v. Hash lookup; byte-array
+  values fall back to a content-equality scan because arrays cannot be
+  hash keys (their equality is content equality, their hash is identity)."
   [db a-id v]
-  (or (not-empty (get (segment-vmap db a-id) v))
-      (filter #(val= (:v ^Datom %) v) (attr-segment-vec db :aevt a-id))))
+  (if (bytes? v)
+    (filter #(val= (:v ^Datom %) v) (attr-vec db :aevt a-id))
+    (get (attr-vmap db a-id) v [])))
 
 (defn entity-datoms
   "All datoms of attribute a-id for entity e."
   [db a-id e]
-  (get (segment-emap db a-id) e []))
+  (get (attr-emap db a-id) e []))
 
 (defn index-slice [db index comps]
   (slice (get db (:set (index-specs index))) index comps))
@@ -497,8 +501,6 @@
               (err :transact/bad-entity "Cannot retract using a tempid" {:v x})))))
 
 (defn- update-indexes [db f ^Datom d]
-  ;; Callers that hand a db value onward (transact-report, since) attach a
-  ;; fresh read-view cache; the cache here is never updated in place.
   (reduce (fn [db {:keys [set ref-only]}]
             (if (and ref-only (= conj f) (not (ref-datom? db d)))
               db

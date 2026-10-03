@@ -226,31 +226,33 @@
   (let [e (slot-value es bindings)
         v (slot-value vs bindings)
         datoms (choose-datoms db e as v)
-        e-need (if (and (symbol? es) (not (contains? bindings es))) :bind :skip)
+        e-need (if (and (symbol? es) (not= es '_) (not (contains? bindings es)))
+                 :bind :skip)
         v-need (cond
                  (= vs '_) :skip
                  (and (symbol? vs) (not (contains? bindings vs))) :bind
                  (nil? as) :check
-                 :else :skip)]
+                 :else :skip)
+        ;; [?x :attr ?x]: e and v are one variable — keep the datom only
+        ;; when e == v, binding ?x once
+        same-e-v (fn [ds]
+                   (into [] (keep (fn [d]
+                                    (when (core/value-eq (:e d) (:v d))
+                                      (assoc bindings es (:e d))))
+                                  ds)))]
     (case [e-need v-need]
       [:skip :skip] (into [] (map (constantly bindings)) datoms)
       [:skip :check] (into [] (keep (fn [d] (when (core/value-eq v (:v d)) bindings))) datoms)
       [:skip :bind] (into [] (map (fn [d] (assoc bindings vs (:v d))) datoms))
       [:bind :skip] (into [] (map (fn [d] (assoc bindings es (:e d))) datoms))
       [:bind :check] (if (= es vs)
-                       (into [] (keep (fn [d]
-                                        (when (core/value-eq (:e d) (:v d))
-                                          (assoc bindings es (:e d))))
-                                      datoms))
+                       (same-e-v datoms)
                        (into [] (keep (fn [d]
                                         (when (core/value-eq v (:v d))
                                           (assoc bindings es (:e d))))
                                       datoms)))
       [:bind :bind] (if (= es vs)
-                      (into [] (keep (fn [d]
-                                       (when (core/value-eq (:e d) (:v d))
-                                         (assoc bindings es (:e d))))
-                                     datoms))
+                      (same-e-v datoms)
                       (into [] (map (fn [d] (assoc bindings es (:e d) vs (:v d))) datoms))))))
 
 ;; ---- predicates and function expressions ----------------------------------------
@@ -314,19 +316,19 @@
 
 (defn- compile-rule-body [db body]
   (let [[head & clauses] body]
-    {:name (first head)
+    {:rule-name (first head)
      :args (vec (rest head))
      :matchers (mapv #(compile-clause db %) clauses)}))
 
 (defn- solve-rule-body [db rule-sols compiled-body]
-  (let [{:keys [name args matchers]} compiled-body
+  (let [{:keys [rule-name args matchers]} compiled-body
         solutions (run-matches rule-sols matchers [{}])]
     (map (fn [b]
            (mapv (fn [a]
                    (if (contains? b a)
                      (get b a)
                      (err :query/bad-rules
-                          "Rule head var not bound by the body" {:rule name :var a})))
+                          "Rule head var not bound by the body" {:rule rule-name :var a})))
                  args))
          solutions)))
 
