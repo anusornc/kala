@@ -142,7 +142,26 @@
       (is (= (set (q-one conn '[:find ?n :where [?p :person/age 30]
                                                 [?p :person/name ?n]]))
              (set (q-one conn '[:find ?n :where [?p :person/name ?n]
-                                                [?p :person/age 30]])))))))
+                                                [?p :person/age 30]])))))
+    (testing "reverse-attribute patterns reorder"
+      (is (= (set (q-one conn '[:find ?who :where [?p :person/name "Bob"]
+                                                  [?p :person/_friend ?who]]))
+             (set (q-one conn '[:find ?who :where [?p :person/_friend ?who]
+                                                  [?p :person/name "Bob"]])))))
+    (testing "aggregates with :with reorder"
+      (is (= (q-one conn '[:find (sum ?age) :with ?p :where [?p :person/age ?age]
+                                                            [?p :person/email ?e]])
+             (q-one conn '[:find (sum ?age) :with ?p :where [?p :person/email ?e]
+                                                            [?p :person/age ?age]]))))
+    (testing "a leading predicate over an :in-bound variable"
+      (is (= #{["Alice"] ["Carol"]}
+             (set (q-one conn '[:find ?n :in $ ?age :where [(< 0 ?age)]
+                                                              [?p :person/age ?age]
+                                                              [?p :person/name ?n]]
+                         30))))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No rule defined"
+                            (q-one conn '[:find ?x :in $ % :where [?p :person/age 30] (missing ?x)]
+                                   '[[(other ?x) [_ :person/age ?x]]]))))))
 
 (deftest find-specs-shape-the-result
   (let [conn (load-fixture!)

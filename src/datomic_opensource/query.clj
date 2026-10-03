@@ -283,27 +283,42 @@
 
 ;; ---- evaluation --------------------------------------------------------------------
 
-;; Clauses compile ONCE per query: pattern preparation (attribute and constant
-;; resolution) and builtin lookup happen here, not per solution. A matcher is
-;; (fn [rule-sols bindings] -> collection of bindings); pattern and expression
-;; matchers ignore rule-sols.
-(defn- compile-clause [db clause]
-  (cond
-    (seq? clause)
-    (fn [rule-sols bindings] (match-rule-call rule-sols clause bindings))
+;; Clauses compile ONCE per query: pattern preparation (attribute and
+;; constant resolution), builtin lookup, and rule-call validation happen
+;; here, not per solution. A matcher is
+;; (fn [rule-sols bindings] -> collection of bindings); pattern and
+;; expression matchers ignore rule-sols.
 
-    (and (vector? clause) (seq? (first clause)))
+(defn- clause-kind [clause]
+  (cond
+    (seq? clause) :rule-call
+    (and (vector? clause) (seq? (first clause))) :fn-expr
+    (vector? clause) :pattern
+    :else :bad))
+
+(defn- compile-clause [db clause rule-keys]
+  (case (clause-kind clause)
+    :rule-call
+    (let [key [(first clause) (count (rest clause))]]
+      ;; validate eagerly so :query/unknown-rule raises regardless of the
+      ;; planned execution order
+      (when-not (contains? rule-keys key)
+        (err :query/unknown-rule "No rule defined"
+             {:rule (first clause) :arity (count (rest clause))}))
+      (fn [rule-sols bindings] (match-rule-call rule-sols clause bindings)))
+
+    :fn-expr
     (let [[f-expr result-slot] clause
           [f & args] f-expr
           f' (or (get builtins f)
                  (err :query/unknown-builtin "Unknown function" {:fn f :clause clause}))]
       (fn [_ bindings] (apply-fn-expr f' args result-slot clause bindings)))
 
-    (vector? clause)
+    :pattern
     (let [prepped (prep-pattern db clause)]
       (fn [_ bindings] (match-pattern db prepped bindings)))
 
-    :else (err :query/bad-clause "Unsupported where clause" {:clause clause})))
+    (err :query/bad-clause "Unsupported where clause" {:clause clause})))
 
 (defn- run-matches [rule-sols matchers initial-solutions]
   (reduce (fn [solutions match]
@@ -322,25 +337,27 @@
 ;; conjunctive evaluation with deterministic expressions — so the result set
 ;; is unaffected; row order is unspecified by contract.
 
+(def ^:private filter-tier 1000000)
+
 (defn- slot-var [s]
   (when (and (symbol? s) (not= s '_)) s))
 
 (defn- clause-info [clause]
-  (cond
-    (seq? clause)
+  (case (clause-kind clause)
+    :rule-call
     (let [args (rest clause)]
       {:provides (into #{} (keep slot-var) args)
        :requires #{}
        :anchors (count (remove symbol? args))})
 
-    (and (vector? clause) (seq? (first clause)))
+    :fn-expr
     (let [[f-expr result] clause
           [_ & args] f-expr]
       {:provides (if-let [v (slot-var result)] #{v} #{})
        :requires (into #{} (keep slot-var) args)
        :anchors 0})
 
-    (vector? clause)
+    :pattern
     (let [[e a v] (pad3 clause)
           const-slot? (fn [s] (and (not (symbol? s)) (not= s '_)))]
       {:provides (into #{} (keep slot-var) [e v])
@@ -348,48 +365,54 @@
        :anchors (count (filter identity
                                [(const-slot? e) (const-slot? v) (not= a '_)]))})
 
-    :else {:provides #{} :requires #{} :anchors 0}))
+    {:provides #{} :requires #{} :anchors 0}))
 
 (defn- plan-order [matchers infos initial-vars]
-  (loop [remaining (vec (range (count matchers)))
-         bound initial-vars
-         order []]
-    (if-some [i (first remaining)]
-      (let [eligible (filter (fn [i] (every? bound (:requires (infos i)))) remaining)
-            ;; nothing eligible means a predicate's arguments are bound by no
-            ;; clause: keep written order and let :query/unbound-var raise
-            pick (if (empty? eligible)
-                   i
-                   (apply max-key
-                          (fn [i]
-                            (let [{:keys [provides anchors]} (infos i)]
-                              ;; filters (bind nothing new) outrank anchored
-                              ;; expansions; the offset dominates any realistic
-                              ;; anchor/var count
-                              (+ (if (every? bound provides) 1000000 0)
-                                 anchors
-                                 (count (filter bound provides)))))
-                          eligible))]
-        (recur (filterv #(not= % pick) remaining)
-               (into bound (:provides (infos pick)))
-               (conj order pick)))
-      (mapv matchers order))))
+  (let [score (fn [bound i]
+                (let [{:keys [provides anchors]} (infos i)]
+                  ;; filters (bind nothing new) outrank anchored expansions;
+                  ;; the tier offset dominates any realistic anchor/var count
+                  (+ (if (every? bound provides) filter-tier 0)
+                     anchors
+                     (count (filter bound provides)))))
+        ;; strictly-greater replacement keeps the EARLIEST maximum — ties
+        ;; fall back to written order (max-key would keep the last)
+        best (fn [bound a b] (if (> (score bound b) (score bound a)) b a))]
+    (loop [remaining (vec (range (count matchers)))
+           bound initial-vars
+           order []]
+      (if-some [head (first remaining)]
+        (let [eligible (filter (fn [idx] (every? bound (:requires (infos idx)))) remaining)
+              pick (if (empty? eligible)
+                     ;; nothing eligible means a predicate's arguments are
+                     ;; bound by no clause: keep written order and let
+                     ;; :query/unbound-var raise
+                     head
+                     (reduce (fn [a b] (best bound a b))
+                             (first eligible)
+                             (rest eligible)))]
+          (recur (filterv #(not= % pick) remaining)
+                 (into bound (:provides (infos pick)))
+                 (conj order pick)))
+        (mapv matchers order)))))
 
-(defn- compile-and-plan [db clauses initial-vars]
-  (let [matchers (mapv #(compile-clause db %) clauses)
+(defn- compile-and-plan [db clauses initial-vars rule-keys]
+  (let [matchers (mapv #(compile-clause db % rule-keys) clauses)
         infos (mapv clause-info clauses)]
     (plan-order matchers infos initial-vars)))
 
 (defn- run-where* [db rule-sols clauses initial-solutions]
   (run-matches rule-sols
-               (compile-and-plan db clauses (into #{} (mapcat keys) initial-solutions))
+               (compile-and-plan db clauses
+                                 (into #{} (mapcat keys) initial-solutions)
+                                 (into #{} (keys rule-sols)))
                initial-solutions))
 
-(defn- compile-rule-body [db body]
+(defn- compile-rule-body [db body rule-keys]
   (let [[head & clauses] body]
     {:rule-name (first head)
      :args (vec (rest head))
-     :matchers (compile-and-plan db clauses #{})}))
+     :matchers (compile-and-plan db clauses #{} rule-keys)}))
 
 (defn- solve-rule-body [db rule-sols compiled-body]
   (let [{:keys [rule-name args matchers]} compiled-body
@@ -411,9 +434,10 @@
 (def ^:private rule-fuel 1000)
 
 (defn- solve-rules [db rules]
-  (let [compiled (into {}
+  (let [rule-keys (into #{} (keys rules))
+        compiled (into {}
                        (map (fn [[key bodies]]
-                              [key (mapv #(compile-rule-body db %) bodies)]))
+                              [key (mapv #(compile-rule-body db % rule-keys) bodies)]))
                        rules)]
     (loop [sols (into {} (map (fn [k] [k #{}]) (keys rules)))
            fuel rule-fuel]
