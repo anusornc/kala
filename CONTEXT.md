@@ -1,4 +1,4 @@
-# DatomicOpenSource
+# Kala
 
 A clean-room, EPL-1.0 reimplementation of Datomic's architecture on the JVM: a single-writer transactor, an embedded peer library, a remote client, and Datalog query, pull, and time-travel reads over pluggable storage.
 

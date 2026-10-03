@@ -4,7 +4,7 @@
   git tag) or defaults to 0.1.0-SNAPSHOT."
   (:require [clojure.tools.build.api :as b]))
 
-(def lib 'io.github.anusornc/datomic-opensource)
+(def lib 'io.github.anusornc/kala)
 (def version (or (System/getenv "RELEASE_VERSION") "0.1.0-SNAPSHOT"))
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
@@ -22,14 +22,14 @@
     :basis basis
     :src-dirs ["src"]
     :pom-data [[:description "An independent, clean-room, open-source reimplementation of Datomic's architecture in Clojure: transactor, embedded peer, remote client, Datalog, pull, time travel."]
-               [:url "https://github.com/anusornc/DatomicOpenSource"]
+               [:url "https://github.com/anusornc/kala"]
                [:licenses
                 [:license
                  [:name "Eclipse Public License - v 1.0"]
                  [:url "https://www.eclipse.org/legal/epl-v10.html"]]]
-               [:scm [:url "https://github.com/anusornc/DatomicOpenSource"]
-                [:connection "scm:git:git://github.com/anusornc/DatomicOpenSource.git"]
-                [:developerConnection "scm:git:ssh://git@github.com/anusornc/DatomicOpenSource.git"]]]}))
+               [:scm [:url "https://github.com/anusornc/kala"]
+                [:connection "scm:git:git://github.com/anusornc/kala.git"]
+                [:developerConnection "scm:git:ssh://git@github.com/anusornc/kala.git"]]]}))
 
 (defn jar [_]
   (clean nil)
