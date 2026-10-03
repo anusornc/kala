@@ -46,6 +46,10 @@ _Avoid_: server, writer
 One append-log record: a t plus the raw datoms transacted at that t. The storage log is an ordered sequence of log entries; rebuilding a database replays it.
 _Avoid_: segment, batch
 
+**segment**:
+Content-addressed data stored under a unique id via the storage protocol's put/get/list. A segment is not a log entry and never holds transaction facts.
+_Avoid_: blob, chunk
+
 **storage backend**:
 A pluggable implementation of the storage protocol (memory, local file) behind the log.
 _Avoid_: adapter, driver
