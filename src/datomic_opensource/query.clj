@@ -206,33 +206,52 @@
     (symbol? slot) (get bindings slot unbound)
     :else slot))
 
-(defn- bind-slot [slot val bindings]
-  (cond
-    (= slot '_) bindings
-    (symbol? slot) (if (contains? bindings slot)
-                     (when (core/value-eq (get bindings slot) val) bindings)
-                     (assoc bindings slot val))
-    :else (when (core/value-eq slot val) bindings)))
-
 (defn- choose-datoms [db e a v]
   (cond
     (and (not= unbound e) a)
     (if (not= unbound v)
-      (core/index-slice db :eavt [e a v])
-      (core/index-slice db :eavt [e a]))
-    (and a (not= unbound v)) (core/index-slice db :avet [a v])
-    a (core/index-slice db :aevt [a])
+      (filter #(core/value-eq (:v %) v) (core/entity-datoms db a e))
+      (core/entity-datoms db a e))
+    (and a (not= unbound v)) (core/value-datoms db a v)
+    a (core/attr-datoms-vec db a)
     (not= unbound e) (core/index-slice db :eavt [e])
     :else (core/index-slice db :eavt [])))
 
+;; Per-datom slot work is specialized on what choose-datoms already enforced:
+;; a bound e slot (variable already bound or a constant) is filtered by the
+;; index lookup itself, and a bound v slot is filtered whenever the attribute
+;; is concrete — so those checks are skipped per datom. Only wildcard
+;; attributes (:a written as _) leave v unfiltered, forcing a live check.
 (defn- match-pattern [db [es as vs] bindings]
   (let [e (slot-value es bindings)
         v (slot-value vs bindings)
-        datoms (choose-datoms db e as v)]
-    (keep (fn [d]
-            (when-some [b1 (bind-slot es (:e d) bindings)]
-              (bind-slot vs (:v d) b1)))
-          datoms)))
+        datoms (choose-datoms db e as v)
+        e-need (if (and (symbol? es) (not (contains? bindings es))) :bind :skip)
+        v-need (cond
+                 (= vs '_) :skip
+                 (and (symbol? vs) (not (contains? bindings vs))) :bind
+                 (nil? as) :check
+                 :else :skip)]
+    (case [e-need v-need]
+      [:skip :skip] (into [] (map (constantly bindings)) datoms)
+      [:skip :check] (into [] (keep (fn [d] (when (core/value-eq v (:v d)) bindings))) datoms)
+      [:skip :bind] (into [] (map (fn [d] (assoc bindings vs (:v d))) datoms))
+      [:bind :skip] (into [] (map (fn [d] (assoc bindings es (:e d))) datoms))
+      [:bind :check] (if (= es vs)
+                       (into [] (keep (fn [d]
+                                        (when (core/value-eq (:e d) (:v d))
+                                          (assoc bindings es (:e d))))
+                                      datoms))
+                       (into [] (keep (fn [d]
+                                        (when (core/value-eq v (:v d))
+                                          (assoc bindings es (:e d))))
+                                      datoms)))
+      [:bind :bind] (if (= es vs)
+                      (into [] (keep (fn [d]
+                                       (when (core/value-eq (:e d) (:v d))
+                                         (assoc bindings es (:e d))))
+                                     datoms))
+                      (into [] (map (fn [d] (assoc bindings es (:e d) vs (:v d))) datoms))))))
 
 ;; ---- predicates and function expressions ----------------------------------------
 
@@ -248,12 +267,8 @@
 
 ;; Returns a COLLECTION of bindings (like match-pattern), so mapcat can
 ;; concatenate results across clauses.
-(defn- apply-fn-expr [clause bindings]
-  (let [[f-expr result-slot] clause
-        [f & args] f-expr
-        f (or (get builtins f)
-              (err :query/unknown-builtin "Unknown function" {:fn f :clause clause}))
-        out (apply f (map #(arg-value % bindings clause) args))]
+(defn- apply-fn-expr [f args result-slot clause bindings]
+  (let [out (apply f (map #(arg-value % bindings clause) args))]
     (cond
       (or (nil? result-slot) (= result-slot '_)) (if out [bindings] nil)
       (symbol? result-slot)
@@ -266,29 +281,52 @@
 
 ;; ---- evaluation --------------------------------------------------------------------
 
-(defn- eval-clause [db rule-sols clause bindings]
+;; Clauses compile ONCE per query: pattern preparation (attribute and constant
+;; resolution) and builtin lookup happen here, not per solution. A matcher is
+;; (fn [rule-sols bindings] -> collection of bindings); pattern and expression
+;; matchers ignore rule-sols.
+(defn- compile-clause [db clause]
   (cond
-    (seq? clause) (match-rule-call rule-sols clause bindings)
-    (and (vector? clause) (seq? (first clause))) (apply-fn-expr clause bindings)
-    (vector? clause) (match-pattern db (prep-pattern db clause) bindings)
+    (seq? clause)
+    (fn [rule-sols bindings] (match-rule-call rule-sols clause bindings))
+
+    (and (vector? clause) (seq? (first clause)))
+    (let [[f-expr result-slot] clause
+          [f & args] f-expr
+          f' (or (get builtins f)
+                 (err :query/unknown-builtin "Unknown function" {:fn f :clause clause}))]
+      (fn [_ bindings] (apply-fn-expr f' args result-slot clause bindings)))
+
+    (vector? clause)
+    (let [prepped (prep-pattern db clause)]
+      (fn [_ bindings] (match-pattern db prepped bindings)))
+
     :else (err :query/bad-clause "Unsupported where clause" {:clause clause})))
 
-(defn- run-where* [db rule-sols clauses initial-solutions]
-  (reduce (fn [solutions clause]
-            (mapcat (fn [b] (eval-clause db rule-sols clause b)) solutions))
+(defn- run-matches [rule-sols matchers initial-solutions]
+  (reduce (fn [solutions match]
+            (mapcat (fn [b] (match rule-sols b)) solutions))
           initial-solutions
-          clauses))
+          matchers))
 
-(defn- solve-rule-body [db rule-sols body]
-  (let [[head & clauses] body
-        args (vec (rest head))
-        solutions (run-where* db rule-sols clauses [{}])]
+(defn- run-where* [db rule-sols clauses initial-solutions]
+  (run-matches rule-sols (mapv #(compile-clause db %) clauses) initial-solutions))
+
+(defn- compile-rule-body [db body]
+  (let [[head & clauses] body]
+    {:name (first head)
+     :args (vec (rest head))
+     :matchers (mapv #(compile-clause db %) clauses)}))
+
+(defn- solve-rule-body [db rule-sols compiled-body]
+  (let [{:keys [name args matchers]} compiled-body
+        solutions (run-matches rule-sols matchers [{}])]
     (map (fn [b]
            (mapv (fn [a]
                    (if (contains? b a)
                      (get b a)
                      (err :query/bad-rules
-                          "Rule head var not bound by the body" {:rule (first head) :var a})))
+                          "Rule head var not bound by the body" {:rule name :var a})))
                  args))
          solutions)))
 
@@ -300,19 +338,21 @@
 (def ^:private rule-fuel 1000)
 
 (defn- solve-rules [db rules]
-  (loop [sols (into {} (map (fn [k] [k #{}]) (keys rules)))
-         fuel rule-fuel]
-    (when (zero? fuel)
-      (err :query/rule-overflow
-           "Rule evaluation did not converge" {:iterations rule-fuel :rules (mapv first (keys rules))}))
-    (let [sols' (reduce-kv (fn [acc key bodies]
-                             (update acc key
-                                     into (mapcat (fn [body]
-                                                    (solve-rule-body db acc body))
-                                                  bodies)))
-                           sols
-                           rules)]
-      (if (= sols' sols) sols (recur sols' (dec fuel))))))
+  (let [compiled (into {}
+                       (map (fn [[key bodies]]
+                              [key (mapv #(compile-rule-body db %) bodies)]))
+                       rules)]
+    (loop [sols (into {} (map (fn [k] [k #{}]) (keys rules)))
+           fuel rule-fuel]
+      (when (zero? fuel)
+        (err :query/rule-overflow
+             "Rule evaluation did not converge" {:iterations rule-fuel :rules (mapv first (keys rules))}))
+      (let [sols' (reduce-kv (fn [acc key bodies]
+                               (update acc key
+                                       into (mapcat (fn [body] (solve-rule-body db acc body)) bodies)))
+                             sols
+                             compiled)]
+        (if (= sols' sols) sols (recur sols' (dec fuel)))))))
 
 ;; ---- :in bindings ----------------------------------------------------------------
 
@@ -418,8 +458,10 @@
                       (dedupe-by-keys (into find-vars (vec with-vars)) solutions)
                       solutions)]
       (case (:type spec)
-        :relation (let [tuples (map (fn [s] (mapv #(get s %) find-vars)) solutions)]
-                    (if (seq with-vars) tuples (distinct tuples)))
+        :relation (let [tuple (fn [s] (mapv #(get s %) find-vars))]
+                    (if (seq with-vars)
+                      (map tuple solutions)
+                      (vec (distinct (map tuple solutions)))))
         :coll (map #(get % (:var spec)) solutions)
         :scalar (first (map #(get % (:var spec)) solutions))
         :string (let [[_ var] (:expr spec)]

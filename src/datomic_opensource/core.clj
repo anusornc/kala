@@ -57,17 +57,25 @@
       (Long/compare (long x) (long y))))
 
 (defn- cmp-by [ks]
-  (fn [x y]
-    (loop [ks ks]
-      (if-not (seq ks)
-        0
-        (let [k (first ks)
-              cx (k x)
-              cy (k y)
-              c (if (= k :v)
-                  (cmp-val cx cy)
-                  (cmp-field cx cy))]
-          (if (zero? c) (recur (rest ks)) c))))))
+  ;; Indexed loop over the field vector: this comparator runs O(log n) times
+  ;; per index seek and once per insert, so it must not allocate per call.
+  (let [n (count ks)
+        v-pos (loop [i 0]
+                (cond
+                  (= i n) -1
+                  (= :v (nth ks i)) i
+                  :else (recur (inc i))))]
+    (fn [x y]
+      (loop [i 0]
+        (if (= i n)
+          0
+          (let [k (nth ks i)
+                cx (k x)
+                cy (k y)
+                c (if (= i v-pos)
+                    (cmp-val cx cy)
+                    (cmp-field cx cy))]
+            (if (zero? c) (recur (inc i)) c)))))))
 
 ;; One spec per index drives everything index-shaped below: the comparator
 ;; field order, the db key of its sorted set, and — derived from :fields
@@ -221,23 +229,94 @@
     (->Datom (slot :e MIN-V) (slot :a MIN-V) (slot :v MIN-V) (slot :tx Long/MIN_VALUE) true)))
 
 (defn- prefix-pred [index comps]
-  (let [ks (take (count comps) (:fields (index-specs index)))]
+  ;; Runs once per datom on every slice; the indexed loop keeps it
+  ;; allocation-free (a lazy map here costs ~150ns per element).
+  (let [fields (:fields (index-specs index))
+        n (count comps)]
     (fn [d]
-      (every? identity
-              (map (fn [k c]
-                     (if (= k :v)
-                       (val= (k d) c)
-                       (= (k d) c)))
-                   ks comps)))))
+      (loop [i 0]
+        (or (= i n)
+            (let [k (nth fields i)
+                  c (nth comps i)]
+              (and (if (= k :v)
+                     (val= (k d) c)
+                     (= (k d) c))
+                   (recur (inc i)))))))))
 
 (defn- slice [index-set index comps]
-  (->> (subseq index-set >= (low-bound index comps))
-       (take-while (prefix-pred index comps))))
+  ;; Eager vector: every caller reduces the slice immediately; laziness only
+  ;; added a LazySeq allocation per element.
+  (into [] (take-while (prefix-pred index comps))
+        (subseq index-set >= (low-bound index comps))))
+
+;; ---- per-attribute read views (query engine) ----------------------------------
+;; Sorted sets stay the source of truth (transactions, public datoms, time
+;; travel). The query engine's per-solution index reads go through views that
+;; are pure functions of one attribute's datom segment: a flat vector for
+;; scans, and hash maps for [a v] / [e a] point lookups.
+;;
+;; The cache lives OUTSIDE db values, keyed by the value itself in a weak
+;; hash map: db values must stay plain maps (structural equality is part of
+;; their observable surface), the cache must be shared by equal db values —
+;; sound because a view is a pure function of the index sets — and it must
+;; die with the last reference to the db value, which weak keys give us.
+;; Clojure maps cache their hashCode, so the equality-keyed lookup is O(1)
+;; after the first touch of a db value.
+
+(def ^:private ^java.util.Map array-caches
+  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
+
+(defn- arrays-atom [db]
+  (locking array-caches
+    (or (.get array-caches db)
+        (let [a (atom {})]
+          (.put array-caches db a)
+          a))))
+
+(defn- attr-segment-vec [db index a-id]
+  (let [build (fn [] (vec (slice (get db (:set (index-specs index))) index [a-id])))
+        a (arrays-atom db)
+        k [index a-id]]
+    (or (get @a k)
+        (let [v (build)]
+          (swap! a assoc k v)
+          v))))
+
+(defn- segment-vmap [db a-id]
+  (let [a (arrays-atom db)
+        k [:vmap a-id]]
+    (or (get @a k)
+        (let [m (group-by :v (attr-segment-vec db :aevt a-id))]
+          (swap! a assoc k m)
+          m))))
+
+(defn- segment-emap [db a-id]
+  (let [a (arrays-atom db)
+        k [:emap a-id]]
+    (or (get @a k)
+        (let [m (group-by :e (attr-segment-vec db :aevt a-id))]
+          (swap! a assoc k m)
+          m))))
 
 ;; Bridges for the query engine (datomic-opensource.query), which works on
 ;; raw datoms with attribute ids.
 (defn attribute [db ident]
   (get (::schema-by-ident db) ident))
+
+(defn attr-datoms-vec [db a-id]
+  (attr-segment-vec db :aevt a-id))
+
+(defn value-datoms
+  "All datoms of attribute a-id whose value is v. Hash lookup with a
+  content-equality fallback (byte-array values cannot be hash keys)."
+  [db a-id v]
+  (or (not-empty (get (segment-vmap db a-id) v))
+      (filter #(val= (:v ^Datom %) v) (attr-segment-vec db :aevt a-id))))
+
+(defn entity-datoms
+  "All datoms of attribute a-id for entity e."
+  [db a-id e]
+  (get (segment-emap db a-id) e []))
 
 (defn index-slice [db index comps]
   (slice (get db (:set (index-specs index))) index comps))
@@ -418,6 +497,8 @@
               (err :transact/bad-entity "Cannot retract using a tempid" {:v x})))))
 
 (defn- update-indexes [db f ^Datom d]
+  ;; Callers that hand a db value onward (transact-report, since) attach a
+  ;; fresh read-view cache; the cache here is never updated in place.
   (reduce (fn [db {:keys [set ref-only]}]
             (if (and ref-only (= conj f) (not (ref-datom? db d)))
               db
@@ -741,18 +822,17 @@
   remain current. Views are read-only: transact/with reject them."
   [db t]
   (let [t (normalize-t t)]
-    (assoc
-     (reduce (fn [db index]
-               (let [{:keys [set cmp]} (index-specs index)]
-                 (assoc db set
-                        ;; datoms carry tx entity ids; tx-eid(t) is
-                        ;; monotonic in t, so compare in eid space
-                        (into (sorted-set-by cmp)
-                              (filter (fn [^Datom d] (> (.tx d) (tx-eid t)))
-                                      (get db set))))))
-             db
-             (keys index-specs))
-     ::view :since)))
+    (-> (reduce (fn [db index]
+                  (let [{:keys [set cmp]} (index-specs index)]
+                    (assoc db set
+                           ;; datoms carry tx entity ids; tx-eid(t) is
+                           ;; monotonic in t, so compare in eid space
+                           (into (sorted-set-by cmp)
+                                 (filter (fn [^Datom d] (> (.tx d) (tx-eid t)))
+                                         (get db set))))))
+                db
+                (keys index-specs))
+        (assoc ::view :since))))
 
 (defn history
   "The db value containing every assertion and retraction ever transacted,
