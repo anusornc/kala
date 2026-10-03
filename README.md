@@ -17,7 +17,7 @@ The behavioral suite runs twice per cycle — peer (embedded) and client (remote
 
 ```bash
 clojure -M:bench                # 200 and 2000 entities
-clojure -M:bench 5000           # custom entity count
+clojure -M:bench 5000 20000     # custom entity counts
 ```
 
 Runs our peer engine and DataScript on identical seed data, cross-checks

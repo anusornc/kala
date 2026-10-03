@@ -82,8 +82,7 @@
     (/ (- (System/nanoTime) t0) 1e9)))
 
 ;; Single unit contract: everything handed to fmt-time is SECONDS, and all
-;; scaling happens here. (The old fmt-ms took milliseconds but multiplied
-;; sub-1ms values by 1000 again — query times printed 1000x too large.)
+;; scaling happens here.
 (defn- fmt-time [s]
   (cond
     (>= s 1) (format "%.2f s" s)
@@ -150,9 +149,17 @@
               mean (first (:mean stats))]
           (println (str "| " label " | " (:name engine) " | " (fmt-time mean) " |")))))))
 
+(defn- parse-sizes [args]
+  (if (seq args)
+    (mapv (fn [arg]
+            (or (parse-long arg)
+                (throw (ex-info (str "Not an entity count: " arg)
+                                {:bench/bad-arg arg}))))
+          args)
+    [200 2000]))
+
 (defn -main [& args]
-  (let [sizes (or (seq (keep parse-long args)) [200 2000])]
-    (doseq [n sizes]
-      (run-bench n))
-    (System/exit 0)))
+  (doseq [n (parse-sizes args)]
+    (run-bench n))
+  (System/exit 0))
 
