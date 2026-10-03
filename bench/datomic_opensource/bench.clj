@@ -4,7 +4,7 @@
   engines answer the same queries and the result sets are cross-checked —
   the harness doubles as an engine-correctness cross-check.
 
-  Run:         clojure -M:bench
+  Run:         clojure -M:bench            (200 and 2000 entities)
   Custom size: clojure -M:bench 5000
 
   Engines are pluggable maps ({:name :setup :transact-batch :q
@@ -76,16 +76,19 @@
 
 ;; ---- timing ---------------------------------------------------------------------
 
-(defn- timed-ms [f]
+(defn- timed-seconds [f]
   (let [t0 (System/nanoTime)
         _ (f)]
-    (/ (- (System/nanoTime) t0) 1e6)))
+    (/ (- (System/nanoTime) t0) 1e9)))
 
-(defn- fmt-ms [ms]
+;; Single unit contract: everything handed to fmt-time is SECONDS, and all
+;; scaling happens here. (The old fmt-ms took milliseconds but multiplied
+;; sub-1ms values by 1000 again — query times printed 1000x too large.)
+(defn- fmt-time [s]
   (cond
-    (>= ms 1000) (format "%.2f s" (/ ms 1000.0))
-    (>= ms 1) (format "%.1f ms" ms)
-    :else (format "%.3f ms" (* 1000.0 ms))))
+    (>= s 1) (format "%.2f s" s)
+    (>= s 0.001) (format "%.1f ms" (* 1000.0 s))
+    :else (format "%.1f µs" (* 1e6 s))))
 
 (defn- collect-tempids [eids tempids]
   (reduce (fn [acc [tempid eid]]
@@ -120,7 +123,7 @@
                               eids-atom (atom {})
                               ;; timed: the transact+commit of every batch
                               ;; only; seed construction happens outside
-                              ingest-ms (timed-ms
+                              ingest-secs (timed-seconds
                                          (fn []
                                            (loop [[batch & more] (seq batches)]
                                              (when batch
@@ -131,24 +134,25 @@
                           (doseq [batch (friend-batches n eids)]
                             ((:transact-batch engine) conn batch))
                           (println (str "  datoms in store: " ((:datoms-count engine) conn)))
-                          {:engine engine :conn conn :ingest-ms ingest-ms}))
+                          {:engine engine :conn conn :ingest-secs ingest-secs}))
                       engines)
         checks (mapv (fn [{:keys [engine conn]}] (cross-check engine conn)) results)]
     (println (str "\n  cross-check: simple/join value sets and filtered count "
                   (if (= (checks 0) (checks 1)) "MATCH across engines" "DIVERGE — timings below are meaningless")))
     (println "\n| benchmark | engine | mean / total |")
     (println "|---|---|---|")
-    (doseq [{:keys [engine conn ingest-ms]} results]
-      (println (str "| bulk ingest | " (:name engine) " | " (fmt-ms ingest-ms) " |"))
+    (doseq [{:keys [engine conn ingest-secs]} results]
+      (println (str "| bulk ingest | " (:name engine) " | " (fmt-time ingest-secs) " |"))
       (doseq [[label query args] [["simple pattern" q-all []]
                                   ["filtered + input" q-filtered [30]]
                                   ["join (friend -> name)" q-join []]]]
         (let [stats (crit/quick-benchmark (doall (apply (:q engine) conn query args)) {})
               mean (first (:mean stats))]
-          (println (str "| " label " | " (:name engine) " | " (fmt-ms (* 1000.0 mean)) " |")))))))
+          (println (str "| " label " | " (:name engine) " | " (fmt-time mean) " |")))))))
 
 (defn -main [& args]
-  (let [n (or (some-> (first args) parse-long) 1000)]
-    (run-bench n)
+  (let [sizes (or (seq (keep parse-long args)) [200 2000])]
+    (doseq [n sizes]
+      (run-bench n))
     (System/exit 0)))
 

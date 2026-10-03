@@ -16,7 +16,7 @@ The behavioral suite runs twice per cycle — peer (embedded) and client (remote
 ## Benchmark
 
 ```bash
-clojure -M:bench                # 1000 entities
+clojure -M:bench                # 200 and 2000 entities
 clojure -M:bench 5000           # custom entity count
 ```
 
