@@ -3,6 +3,7 @@
   retraction status, and speculative with()."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
+            [kala.core :as core]
             [kala.storage :as storage]
             [kala.test-util :refer [define! fresh-conn]]
             [kala.time-travel :as time-travel]))
@@ -140,3 +141,43 @@
       (let [{:keys [alice]} (load-fixture!)
             report (api/with db-before [[:db.fn/retractEntity alice]])]
         (is (seq (:tx-data report)))))))
+
+;; ---- replay cache --------------------------------------------------------------
+;; The cache must be unobservable: same results, same db-value shape. The one
+;; thing it changes is that a repeat as-of/history at the same t stops
+;; re-scanning storage. The Storage protocol is the seam — a counting wrapper
+;; observes the scans without touching any public interface.
+
+(defn- counting-storage
+  "A Storage handle delegating every call to s; returns [scans spy] where
+  scans counts log-scan invocations."
+  [s]
+  (let [scans (atom 0)
+        spy (reify storage/Storage
+              (put-segment [_ id data] (storage/put-segment s id data))
+              (get-segment [_ id] (storage/get-segment s id))
+              (list-segments [_] (storage/list-segments s))
+              (append-log [_ entry] (storage/append-log s entry))
+              (log-scan [_ from-t to-t]
+                (swap! scans inc)
+                (storage/log-scan s from-t to-t)))]
+    [scans spy]))
+
+(deftest as-of-and-history-do-not-rescan-storage-at-a-repeated-t
+  (let [{:keys [conn tx2 tx3]} (load-fixture!)
+        db (api/db conn)
+        [scans spy] (counting-storage (api/db-storage db))
+        db* (assoc db ::core/storage spy)]
+    (testing "repeat as-of at the same t replays once"
+      (let [db-at-t2 (api/as-of db* tx2)]
+        (is (= 1 @scans) "the first as-of scans the log once")
+        (is (= db-at-t2 (api/as-of db* tx2)) "the second as-of is equal")
+        (is (= 1 @scans) "the second as-of does not re-scan")
+        (testing "a different t scans again"
+          (is (some? (api/as-of db* tx3)))
+          (is (= 2 @scans)))))
+    (testing "repeat history at the same t replays once"
+      (let [hist (api/history db*)]
+        (is (= 3 @scans) "one scan for history after the two as-ofs")
+        (is (= hist (api/history db*)))
+        (is (= 3 @scans) "the second history does not re-scan")))))

@@ -64,6 +64,41 @@
           (core/empty-db storage)
           (storage/log-scan storage (inc core/bootstrap-t) up-to-t)))
 
+;; ---- replay cache ----------------------------------------------------------------
+;; The log is append-only, so a replay up to a fixed t is a pure function of
+;; entries that can never change: as-of and history are cacheable with no
+;; invalidation. Following the ADR-0002 read-view pattern, the cache lives
+;; OUTSIDE db values — db values stay plain maps (structural equality is part
+;; of their observable surface). It is a weak map keyed by the storage handle
+;; with a per-handle atom of entries keyed [up-to-t history?]: both storage
+;; backends hand out fresh reify handles whose equality is identity, so
+;; equal-but-distinct handles over one directory simply hold separate entries,
+;; and the weak key lets a handle's whole entry set die with it.
+;;
+;; Entries store the replayed db stripped of ::storage: a db value carries its
+;; handle, and a value that strongly refers to its own weak key prevents the
+;; key from ever being reclaimed. Hits re-assoc the live handle, restoring a
+;; db equal to a fresh replay.
+
+(def ^:private ^java.util.Map replay-caches
+  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
+
+(defn- replay-cache [storage]
+  (locking replay-caches
+    (or (.get replay-caches storage)
+        (let [a (atom {})]
+          (.put replay-caches storage a)
+          a))))
+
+(defn- cached-replay [storage up-to-t history?]
+  (let [a (replay-cache storage)
+        k [up-to-t history?]]
+    (or (when-some [db (get @a k)]
+          (assoc db ::core/storage storage))
+        (let [db (replay storage up-to-t history?)]
+          (swap! a assoc k (dissoc db ::core/storage))
+          db))))
+
 (defn as-of
   "The db value as of transaction t (a t counter or a tx entity id)."
   [db t]
@@ -72,7 +107,7 @@
       (core/err :db/bad-t "t is before the bootstrap transaction" {:t t}))
     (if (>= t (::core/t db))
       db
-      (replay (::core/storage db) t false))))
+      (cached-replay (::core/storage db) t false))))
 
 (defn since
   "A view of the db exposing only datoms asserted after t (a t counter or a
@@ -96,7 +131,7 @@
   "The db value containing every assertion and retraction ever transacted,
   each with its added flag."
   [db]
-  (replay (::core/storage db) (::core/t db) true))
+  (cached-replay (::core/storage db) (::core/t db) true))
 
 (defn db-with
   "Speculative transaction: applies tx-data against a db value and returns
@@ -109,5 +144,8 @@
   "Rebuild the current db value from the complete storage log. Opening an
   existing database is: open storage, restore-db, continue — nothing is
   lost or applied twice."
+  ;; deliberately uncached: its up-to-t is the complete CURRENT log, which
+  ;; grows — a fixed-t cache entry would serve stale entries. as-of/history
+  ;; keys are pinned by their caller's db t, so their content is frozen.
   [storage]
   (replay storage Long/MAX_VALUE false))
