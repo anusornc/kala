@@ -3,7 +3,6 @@
   via unique identity, and transaction metadata (:db/txInstant, custom)."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
-            [kala.core :as core]
             [kala.test-util :refer [assert-error define! fresh-conn]]))
 
 (defn install-schema! [conn]

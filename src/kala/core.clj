@@ -1,13 +1,19 @@
 (ns kala.core
   "Datom representation, entity-id allocation, the bootstrap schema, index
-  construction, and the transaction pipeline. No I/O here: storage sits behind
-  the Storage protocol (seam 2). Reads go through immutable db values."
+  construction, and the read interfaces over immutable db values. The
+  transaction pipeline lives in kala.tx; time travel and log replay in
+  kala.time-travel. No I/O here: storage sits behind the Storage protocol
+  (seam 2). Reads go through immutable db values — plain maps keyed
+  :kala.core/*, which every kala module shares."
   (:require [clojure.string :as str]
             [kala.storage :as storage]))
 
 ;; ---- errors -----------------------------------------------------------------
 
-(defn- err [kind msg data]
+(defn err
+  "Raise the error shape every kala module shares: an ex-info whose data
+  carries :kala/error. The error contract is part of the public interface."
+  [kind msg data]
   (throw (ex-info msg (merge {:kala/error kind} data))))
 
 ;; ---- entity ids: partition / block / index packed into a positive long ------
@@ -81,35 +87,22 @@
 ;; field order, the db key of its sorted set, and — derived from :fields
 ;; (everything before :tx, which every index sorts last) — prefix bounds,
 ;; prefix matching, and component resolution. Adding an index is one entry
-;; here, not a case arm in five places.
-(def ^:private index-specs
+;; here, not a case arm in five places. Public: kala.tx maintains the indexes
+;; and kala.time-travel filters them for since, both through this table.
+(def index-specs
   {:eavt {:fields [:e :a :v :tx] :set ::eavt :cmp (cmp-by [:e :a :v :tx])}
    :aevt {:fields [:a :e :v :tx] :set ::aevt :cmp (cmp-by [:a :e :v :tx])}
    :avet {:fields [:a :v :e :tx] :set ::avet :cmp (cmp-by [:a :v :e :tx])}
    ;; Datomic's VAET holds only reference datoms (reverse-ref lookups)
    :vaet {:fields [:v :a :e :tx] :set ::vaet :cmp (cmp-by [:v :a :e :tx]) :ref-only true}})
 
-(defn- ref-datom? [db ^Datom d]
+(defn ref-datom?
+  "Is this datom's attribute a :db.type/ref? Drives VAET membership.
+  Public for kala.tx's index maintenance."
+  [db ^Datom d]
   (= :db.type/ref (:value-type (get (::schema-by-id db) (.a d)))))
 
-
 ;; ---- value types ------------------------------------------------------------
-
-(def ^:private value-preds
-  {:db.type/string  string?
-   :db.type/keyword keyword?
-   :db.type/symbol  symbol?
-   :db.type/long    (fn [x] (instance? Long x))
-   :db.type/bigint  (fn [x] (or (instance? clojure.lang.BigInt x)
-                                (instance? java.math.BigInteger x)))
-   :db.type/float   (fn [x] (instance? Float x))
-   :db.type/double  (fn [x] (instance? Double x))
-   :db.type/boolean boolean?
-   :db.type/instant (fn [x] (instance? java.util.Date x))
-   :db.type/uuid    (fn [x] (instance? java.util.UUID x))
-   :db.type/uri     (fn [x] (instance? java.net.URI x))
-   :db.type/bytes   bytes?
-   :db.type/ref     (fn [x] (and (int? x) (pos? x)))})
 
 ;; Byte arrays need content equality; everything else is Clojure =.
 (defn- val= [x y]
@@ -119,7 +112,9 @@
 
 ;; ---- bootstrap schema -------------------------------------------------------
 
-(def ^:private bootstrap-t 1)
+(def bootstrap-t
+  "The transaction counter of the genesis transaction."
+  1)
 
 (def ^:private meta-attrs
   [{:db/ident :db/ident :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
@@ -144,7 +139,10 @@
 (defn- enum-eids []
   (into {} (map-indexed (fn [j k] [k (eid 0 0 (+ 100 j))]) enum-idents)))
 
-(defn- attr-eid [ident]
+(defn attr-eid
+  "The deterministic entity id of a bootstrap schema attribute. Public for
+  kala.tx, which stamps :db/txInstant on every transaction entity."
+  [ident]
   (eid 0 0 (attr-pos ident)))
 
 (defn- bootstrap-tuples []
@@ -205,12 +203,27 @@
             ::schema-by-ident schema-by-ident
             ::schema-by-id schema-by-id})))
 
+(defn db-t
+  "The db value's transaction counter t. The plain-map read accessor for
+  the ::t key — read db-value state through this, not the raw key."
+  [db]
+  (::t db))
+
+(defn db-storage
+  "The storage handle backing a db value. The plain-map read accessor for
+  the ::storage key — read db-value state through this, not the raw key."
+  [db]
+  (::storage db))
+
 (defn entid [db ident-or-eid]
   (if (int? ident-or-eid)
     ident-or-eid
     (get (::idents db) ident-or-eid)))
 
-(defn- lookup-attr [db ident-or-id]
+(defn lookup-attr
+  "An attribute's schema map by ident or by attr id, or nil. Public for
+  kala.tx's op resolution and map-form expansion."
+  [db ident-or-id]
   (or (get (::schema-by-ident db) ident-or-id)
       (get (::schema-by-id db) ident-or-id)))
 
@@ -243,7 +256,11 @@
                      (= (k d) c))
                    (recur (inc i)))))))))
 
-(defn- slice [index-set index comps]
+(defn slice
+  "The contiguous run of one index matching a prefix of components, eager.
+  Public for kala.tx: current-datom lookups and entity retraction read
+  through the same primitive as every other slice."
+  [index-set index comps]
   ;; Eager vector: every caller reduces the slice immediately; laziness only
   ;; added a LazySeq allocation per element.
   (into [] (take-while (prefix-pred index comps))
@@ -341,7 +358,10 @@
 (defn many-attr? [attr]
   (= :db.cardinality/many (:cardinality attr)))
 
-(defn- public-datom [db ^Datom d]
+(defn public-datom
+  "The public shape of a datom: attribute resolved to its ident. Public for
+  kala.tx, which reports :tx-data in the same shape readers see."
+  [db ^Datom d]
   (let [ident (or (:ident (get (::schema-by-id db) (.a d))) (.a d))]
     (->Datom (.e d) ident (.v d) (.tx d) (.added d))))
 
@@ -399,459 +419,3 @@
     (err :datoms/unknown-index "Unknown index" {:index index}))
   (map (partial public-datom db)
        (index-from db index (resolve-components db index components))))
-
-(defn- current-datom [db e a-id v]
-  (first (filter #(val= v (.v ^Datom %))
-                 (slice (::eavt db) :eavt [e a-id]))))
-
-(defn- current-datom-any-v [db e a-id]
-  (first (slice (::eavt db) :eavt [e a-id])))
-
-(defn- avet-holder [db a-id v]
-  (when-some [^Datom d (first (slice (::avet db) :avet [a-id v]))]
-    (.e d)))
-
-;; ---- transaction pipeline ------------------------------------------------------
-
-(def ^:private retract-entity-ops #{:db.fn/retractEntity :db/retractEntity})
-
-;; The reserved tempid that names the transaction entity itself, so tx
-;; metadata is ordinary map-form data: {:db/id "datomic.tx" :db/txInstant ...}
-(def ^:private tx-tempid "datomic.tx")
-
-;; Map form -> list-form ops. Returns [eid ops]. Nested maps are allowed only
-;; under component attributes (Datomic semantics); cardinality-many values
-;; given as collections expand to one op per element. Entities without :db/id
-;; get an opaque internal tempid that can never collide with user tempids.
-(defn- expand-adds [eid k v]
-  (mapv (fn [x] [eid k x]) v))
-
-(defn- parse-entity-map [db m]
-  (let [eid (or (:db/id m) (Object.))]
-    (loop [[[k v] & more] (seq (dissoc m :db/id))
-           adds []
-           child-ops []]
-      (if-not k
-        [eid (into (mapv (fn [[e a v]] [:db/add e a v]) adds) child-ops)]
-        (let [attr (or (lookup-attr db k)
-                       (err :transact/unknown-attribute "Unknown attribute" {:attribute k}))
-              many? (= :db.cardinality/many (:cardinality attr))
-              ref? (= :db.type/ref (:value-type attr))
-              nest! (fn [cm]
-                      (when-not (:component? attr)
-                        (err :transact/nested-map-requires-component
-                             "Nested maps require a component attribute" {:attribute k}))
-                      (parse-entity-map db cm))]
-          (cond
-            (and ref? (map? v))
-            (let [[child cops] (nest! v)]
-              (recur more (conj adds [eid k child]) (into child-ops cops)))
-
-            (and ref? (coll? v))
-            (if (every? map? v)
-              (let [parsed (mapv nest! v)]
-                (recur more
-                       (into adds (map (fn [[child _]] [eid k child]) parsed))
-                       (into child-ops (mapcat second parsed))))
-              (if many?
-                (recur more (into adds (expand-adds eid k v)) child-ops)
-                (recur more (conj adds [eid k v]) child-ops)))
-
-            (and (coll? v) many?)
-            (recur more (into adds (expand-adds eid k v)) child-ops)
-
-            :else
-            (recur more (conj adds [eid k v]) child-ops)))))))
-
-(defn- validate-op [op]
-  (when-not (vector? op)
-    (err :transact/bad-op "Operations must be vectors" {:op op}))
-  (cond
-    (and (contains? #{:db/add :db/retract} (first op)) (= 4 (count op))) op
-    (and (contains? retract-entity-ops (first op)) (= 2 (count op))) op
-    :else (err :transact/bad-op
-               "Operations must be [:db/add e a v], [:db/retract e a v], or [:db.fn/retractEntity e]"
-               {:op op})))
-
-(defn- resolve-static-e [db x]
-  (cond
-    (int? x) (if (pos? x)
-               x
-               (err :transact/bad-entity "Entity id must be positive" {:e x}))
-    (keyword? x) (or (entid db x)
-                     (err :transact/unknown-ident "No entity with ident" {:ident x}))
-    :else (err :transact/bad-entity
-               "Entity must be a positive id, tempid string, or ident" {:e x})))
-
-(defn- resolve-v [db kind attr x ensure-temp]
-  (if (not= :db.type/ref (:value-type attr))
-    [db x]
-    (cond
-      (string? x) (if (= :db/add kind)
-                    (let [[db' e] (ensure-temp db x)]
-                      [db' e])
-                    (err :transact/bad-entity "Cannot retract using a tempid" {:v x}))
-      (keyword? x) [db (or (entid db x)
-                           (err :transact/unknown-ident "No entity with ident" {:ident x}))]
-      (int? x) (if (pos? x)
-                 [db x]
-                 (err :transact/bad-entity "Entity id must be positive" {:v x}))
-      :else (if (= :db/add kind)
-              (ensure-temp db x)
-              (err :transact/bad-entity "Cannot retract using a tempid" {:v x})))))
-
-(defn- update-indexes [db f ^Datom d]
-  (reduce (fn [db {:keys [set ref-only]}]
-            (if (and ref-only (= conj f) (not (ref-datom? db d)))
-              db
-              (update db set f d)))
-          db
-          (vals index-specs)))
-
-(defn- add-datom [db ^Datom d]
-  [(update-indexes db conj d)
-   [d]])
-
-(defn- drop-datom [db ^Datom current retract-d]
-  [(update-indexes db disj current)
-   [retract-d]])
-
-(defn- apply-add [db tx attr e v]
-  (let [a-id (:id attr)]
-    (if (= :db.cardinality/one (:cardinality attr))
-      (if-let [current (current-datom-any-v db e a-id)]
-        (if (val= (.v ^Datom current) v)
-          [db []]
-          (let [[db' rd] (drop-datom db current (->Datom e a-id (.v ^Datom current) tx false))
-                [db'' ad] (add-datom db' (->Datom e a-id v tx true))]
-            [db'' (into rd ad)]))
-        (add-datom db (->Datom e a-id v tx true)))
-      (if (current-datom db e a-id v)
-        [db []]
-        (add-datom db (->Datom e a-id v tx true))))))
-
-(defn- apply-retract [db tx attr e v]
-  (let [a-id (:id attr)]
-    (if-let [current (current-datom db e a-id v)]
-      (drop-datom db current (->Datom e a-id v tx false))
-      [db []])))
-
-(defn- schema-attr-ids [db pred]
-  (into #{}
-        (comp (filter (fn [[_ a]] (pred a)))
-              (map key))
-        (::schema-by-id db)))
-
-;; Datomic semantics: retracts every datom of the entity, every incoming
-;; reference to it, and recurses through component children.
-(defn- retract-entity [db tx e]
-  (let [ref-ids (schema-attr-ids db (fn [a] (= :db.type/ref (:value-type a))))
-        component-ids (schema-attr-ids db :component?)]
-    (loop [db db
-           stack [e]
-           processed #{}
-           acc []]
-      (if-some [e' (first stack)]
-        (if (contains? processed e')
-          (recur db (rest stack) processed acc)
-          (let [subject (vec (slice (::eavt db) :eavt [e']))
-                incoming (vec (for [a ref-ids
-                                    d (slice (::avet db) :avet [a e'])]
-                                d))
-                retracted (distinct (concat subject incoming))
-                db' (reduce (fn [db ^Datom d]
-                              (update-indexes db disj d))
-                            db retracted)
-                kids (keep (fn [^Datom d]
-                             (when (contains? component-ids (.a d)) (.v d)))
-                           subject)
-                retract-datoms (mapv (fn [^Datom d]
-                                       (->Datom (.e d) (.a d) (.v d) tx false))
-                                     retracted)]
-            (recur db'
-                   (into (rest stack) kids)
-                   (conj processed e')
-                   (into acc retract-datoms))))
-        [db acc]))))
-
-(defn- value-type-pred [attr]
-  (or (get value-preds (:value-type attr))
-      (err :transact/unknown-value-type
-           "Unknown value type"
-           {:attribute (:ident attr) :value-type (:value-type attr)})))
-
-(defn- validate-value-type [attr v op]
-  (when-not ((value-type-pred attr) v)
-    (err :transact/bad-value-type
-         "Value does not match the attribute's value type"
-         {:attribute (:ident attr)
-          :value-type (:value-type attr)
-          :op op})))
-
-(defn- resolve-e [db kind e unique-holder unique {:keys [temps ensure-temp upsert-claimants]} op]
-  (if (or (string? e) (and (not (int? e)) (not (keyword? e))))
-    ;; user tempid (string) or internal opaque tempid from map form
-    (if (= :db/retract kind)
-      (err :transact/bad-entity "Cannot retract using a tempid" {:op op})
-      (let [allocated (get @temps e)]
-        (cond
-          (and unique-holder allocated (not= allocated unique-holder))
-          (if (= :db.unique/identity unique)
-            (err :transact/conflicting-upserts
-                 "Tempid already resolves to a different entity" {:op op})
-            (err :transact/unique-conflict
-                 "Tempid's entity already holds a different value for a unique attribute" {:op op}))
-          allocated [db allocated]
-          (and unique-holder (= :db.unique/value unique))
-          (err :transact/unique-conflict
-               "Unique value already held by another entity" {:op op})
-          unique-holder (do (when-let [claimant (get @upsert-claimants unique-holder)]
-                              (when (not= claimant e)
-                                (err :transact/conflicting-upserts
-                                     "Two tempids upsert the same unique value" {:op op})))
-                            (vswap! upsert-claimants assoc unique-holder e)
-                            (vswap! temps assoc e unique-holder)
-                            [db unique-holder])
-          :else (ensure-temp db e))))
-    (let [e' (resolve-static-e db e)]
-      (when (and (= :db/add kind) unique-holder (not= e' unique-holder))
-        (err :transact/unique-conflict
-             "Unique value already held by another entity" {:op op}))
-      [db e'])))
-
-(defn- apply-op [db {:keys [tx temps ensure-temp upsert-claimants] :as txn} [kind e a v :as op]]
-  (if (contains? retract-entity-ops kind)
-    (let [[db' ds] (retract-entity db tx (resolve-static-e db e))]
-      [db' ds])
-    (let [attr (or (lookup-attr db a)
-                   (err :transact/unknown-attribute "Unknown attribute" {:attribute a}))
-          [db v] (resolve-v db kind attr v ensure-temp)
-          _ (validate-value-type attr v op)
-          unique (:unique attr)
-          unique-holder (when (and unique (= :db/add kind))
-                          (avet-holder db (:id attr) v))
-          [db e] (resolve-e db kind e unique-holder unique txn op)
-          [db' datoms] (if (= :db/add kind)
-                         (apply-add db tx attr e v)
-                         (apply-retract db tx attr e v))]
-      [db' datoms])))
-
-;; Schema is data: entities that gain a :db/ident become resolvable, and those
-;; that also carry :db/valueType become attributes, re-derived from their datoms.
-(defn- register-new-entities [db datoms]
-  (if-some [ident-aid (get (::idents db) :db/ident)]
-    (let [touched (into (sorted-set)
-                        (comp (filter (fn [^Datom d] (= ident-aid (.a d))))
-                              (map (fn [^Datom d] (.e d))))
-                        datoms)]
-      (reduce (fn [db e]
-                (let [by-a (into {} (map (fn [^Datom d] [(.a d) (.v d)]))
-                                 (slice (::eavt db) :eavt [e]))
-                      ident (get by-a ident-aid)]
-                  (if ident
-                    (if-some [vt (get by-a (get (::idents db) :db/valueType))]
-                      (let [idents-by-eid (into {} (map (fn [[k v]] [v k])) (::idents db))
-                            attr {:id e
-                                  :ident ident
-                                  :value-type (get idents-by-eid vt)
-                                  :cardinality (or (get idents-by-eid (get by-a (get (::idents db) :db/cardinality)))
-                                                   :db.cardinality/one)
-                                  :unique (get idents-by-eid (get by-a (get (::idents db) :db/unique)))
-                                  :component? (true? (get by-a (get (::idents db) :db/isComponent)))}
-                            _ (value-type-pred attr)
-                            _ (when-not (contains? #{:db.cardinality/one :db.cardinality/many}
-                                                   (:cardinality attr))
-                                (err :transact/unknown-cardinality
-                                     "Unknown cardinality"
-                                     {:attribute ident :cardinality (:cardinality attr)}))
-                            _ (when (and (:unique attr) (= :db.type/bytes (:value-type attr)))
-                                (err :transact/unique-not-supported
-                                     "Byte values cannot be unique" {:attribute ident}))
-                            _ (when (and (:unique attr) (= :db.cardinality/many (:cardinality attr)))
-                                (err :transact/unique-not-supported
-                                     "Unique attributes must have cardinality one" {:attribute ident}))]
-                        (-> db
-                            (update ::idents assoc ident e)
-                            (assoc-in [::schema-by-ident ident] attr)
-                            (assoc-in [::schema-by-id e] attr)))
-                      (update db ::idents assoc ident e))
-                    db)))
-              db
-              touched))
-    db))
-
-(defn transact-report
-  "Pure transaction: applies tx-data against a db value and returns the
-  report {:db-before :db-after :t :tx-data :tempids :raw-datoms} WITHOUT
-  touching storage. This is the speculative path (with) and the core of
-  the write path; the transactor (TT9) owns serialization across processes.
-  :raw-datoms carries internal (attr-id) datoms for the storage log."
-  [db-before tx-data]
-  (when (::view db-before)
-    (err :db/view-not-writable "Filtered db views (since) cannot be transacted against" {:view (::view db-before)}))
-  (when-not (and (vector? tx-data) (every? #(or (vector? %) (map? %)) tx-data))
-    (err :transact/bad-op "Transaction data must be a vector of operations or entity maps" {:tx-data tx-data}))
-  (let [t (inc (::t db-before))
-        tx (tx-eid t)
-        temps (volatile! {tx-tempid tx})
-        upsert-claimants (volatile! {})
-        ensure-temp (fn [db tempid]
-                      (if-some [e (get @temps tempid)]
-                        [db e]
-                        (let [n (get (::next-idx db) 1 0)
-                              e (eid 1 (quot n 1024) (rem n 1024))]
-                          (vswap! temps assoc tempid e)
-                          [(assoc-in db [::next-idx 1] (inc n)) e])))
-        txn {:tx tx
-             :temps temps
-             :ensure-temp ensure-temp
-             :upsert-claimants upsert-claimants}
-        ops (mapcat (fn [x]
-                      (if (map? x)
-                        (second (parse-entity-map db-before x))
-                        [x]))
-                    tx-data)
-        [db-after datoms]
-        (reduce (fn [[db acc] op]
-                  (let [[db' ds] (apply-op db txn (validate-op op))]
-                    [db' (into acc ds)]))
-                [db-before []]
-                ops)
-        ;; Every transaction entity carries :db/txInstant unless the tx itself
-        ;; supplied one via metadata. The stamp is part of the transaction: it
-        ;; goes to the log, the indexes, and the report's :tx-data.
-        [db-stamped tx-stamp]
-        (if (current-datom-any-v db-after tx (attr-eid :db/txInstant))
-          [db-after []]
-          (let [attr (get (::schema-by-id db-after) (attr-eid :db/txInstant))
-                [db' ds] (apply-add db-after tx attr tx (java.util.Date.))]
-            [db' ds]))
-        db-after (register-new-entities db-stamped datoms)
-        final-db (assoc db-after ::t t)]
-    {:db-before db-before
-     :db-after final-db
-     :t t
-     :tx-data (mapv (partial public-datom final-db) (into datoms tx-stamp))
-     :raw-datoms (into datoms tx-stamp)
-     :tempids (-> (into {} (filter (fn [[k _]] (string? k)) @temps))
-                  (assoc :db/current-tx tx))}))
-
-(defn transact
-  "Apply transaction data against the connection (list-form ops, map-form
-  entity maps, any mix) and return the tx report with :db-before,
-  :db-after, :tx-data, and :tempids. Appends to the storage log and swaps
-  the connection atom."
-  [conn tx-data]
-  (let [{:keys [db-after t raw-datoms] :as report} (transact-report @conn tx-data)]
-    (storage/append-log (::storage db-after)
-                        {:t t
-                         :datoms (mapv (fn [^Datom d] [(.e d) (.a d) (.v d) (.tx d) (.added d)])
-                                       raw-datoms)})
-    (reset! conn db-after)
-    (dissoc report :raw-datoms)))
-
-;; ---- time travel ---------------------------------------------------------------
-
-;; tx entity ids pack t into the low 42 bits (partition 2)
-(def ^:private t-bits-mask 0x3FFFFFFFFFF)
-
-(defn eid->t
-  "Extract the transaction counter from a tx entity id."
-  [e]
-  (bit-and e t-bits-mask))
-
-(defn- normalize-t [x]
-  (cond
-    (not (int? x))
-    (err :db/bad-t "t must be a counter or a tx entity id" {:t x})
-    (= 2 (eid->partition x)) (eid->t x)
-    (= 1 (eid->partition x))
-    (err :db/bad-t "Expected t or a tx entity id, got a user entity id" {:e x})
-    :else x))
-
-;; Log entries round-trip through Java serialization, which yields Boolean
-;; instances that are NOT reference-identical to the compiled true/false
-;; literals — so true?/false? (identity checks) would misclassify them.
-;; Compare by value and canonicalize.
-(defn- raw->datom [[e a v tx added]]
-  (->Datom e a v tx (boolean (= added true))))
-
-;; Allocation index (block*1024 + idx) of a user-partition entity id, for
-;; rebuilding ::next-idx during replay.
-(defn- user-alloc-idx [x]
-  (when (and (int? x) (pos? x) (= 1 (eid->partition x)))
-    (inc (+ (* (bit-and (bit-shift-right x 10) 0x3FF) 1024)
-            (bit-and x 0x3FF)))))
-
-(defn- restore-next-idx [db datoms]
-  (if-some [n (transduce (comp (mapcat (fn [^Datom d] [(.e d) (.v d)]))
-                               (keep user-alloc-idx))
-                         max 0 datoms)]
-    (assoc-in db [::next-idx 1] (max n (get-in db [::next-idx 1] 0)))
-    db))
-
-;; Rebuild a db value from the storage log up to up-to-t. history? keeps
-;; retraction entries as visible datoms (added=false) instead of applying
-;; them as removals.
-(defn- replay [storage up-to-t history?]
-  (reduce (fn [db {:keys [t datoms]}]
-            (let [datoms (mapv raw->datom datoms)
-                  db (reduce (fn [db ^Datom d]
-                               (if (or history? (.added d))
-                                 (update-indexes db conj d)
-                                 (update-indexes db disj d)))
-                             db datoms)]
-              (-> db
-                  (register-new-entities datoms)
-                  (restore-next-idx datoms)
-                  (assoc ::t t))))
-          (empty-db storage)
-          (storage/log-scan storage (inc bootstrap-t) up-to-t)))
-
-(defn as-of
-  "The db value as of transaction t (a t counter or a tx entity id)."
-  [db t]
-  (let [t (normalize-t t)]
-    (when (< t bootstrap-t)
-      (err :db/bad-t "t is before the bootstrap transaction" {:t t}))
-    (if (>= t (::t db))
-      db
-      (replay (::storage db) t false))))
-
-(defn since
-  "A view of the db exposing only datoms asserted after t (a t counter or a
-  tx entity id). Facts from t and earlier are invisible even though they
-  remain current. Views are read-only: transact/with reject them."
-  [db t]
-  (let [t (normalize-t t)]
-    (-> (reduce (fn [db index]
-                  (let [{:keys [set cmp]} (index-specs index)]
-                    (assoc db set
-                           ;; datoms carry tx entity ids; tx-eid(t) is
-                           ;; monotonic in t, so compare in eid space
-                           (into (sorted-set-by cmp)
-                                 (filter (fn [^Datom d] (> (.tx d) (tx-eid t)))
-                                         (get db set))))))
-                db
-                (keys index-specs))
-        (assoc ::view :since))))
-
-(defn history
-  "The db value containing every assertion and retraction ever transacted,
-  each with its added flag."
-  [db]
-  (replay (::storage db) (::t db) true))
-
-(defn db-with
-  "Speculative transaction: applies tx-data against a db value and returns
-  the report {:db-before :db-after :t :tx-data :tempids} without touching
-  storage or the connection."
-  [db tx-data]
-  (dissoc (transact-report db tx-data) :raw-datoms))
-
-(defn restore-db
-  "Rebuild the current db value from the complete storage log. Opening an
-  existing database is: open storage, restore-db, continue — nothing is
-  lost or applied twice."
-  [storage]
-  (replay storage Long/MAX_VALUE false))

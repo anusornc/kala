@@ -14,7 +14,9 @@
             [kala.pull :as pull]
             [kala.query :as query]
             [kala.storage.file :as file]
-            [kala.storage.memory :as memory])
+            [kala.storage.memory :as memory]
+            [kala.time-travel :as time-travel]
+            [kala.tx :as tx])
   (:import (kala.client ClientConn RemoteDb)))
 
 (defn- client-conn? [c]
@@ -42,7 +44,7 @@
             (throw (ex-info "Unknown storage backend"
                             {:kala/error :connect/unknown-storage
                              :storage storage})))]
-    (atom (core/restore-db s))))
+    (atom (time-travel/restore-db s))))
 
 (defn db
   "The current immutable db value (peer), or a marker for the transactor's
@@ -58,7 +60,7 @@
   [conn tx-data]
   (if (client-conn? conn)
     (client/transact conn tx-data)
-    (core/transact conn tx-data)))
+    (tx/transact conn tx-data)))
 
 (defn q
   "Run a Datalog query against the db (and any further :in inputs):
@@ -124,21 +126,21 @@
   [db t]
   (if (remote-db? db)
     (client/as-of db t)
-    (core/as-of db t)))
+    (time-travel/as-of db t)))
 
 (defn since
   "A view of the db exposing only datoms asserted after t."
   [db t]
   (if (remote-db? db)
     (client/since db t)
-    (core/since db t)))
+    (time-travel/since db t)))
 
 (defn history
   "Every assertion and retraction ever transacted, each with its added flag."
   [db]
   (if (remote-db? db)
     (client/history db)
-    (core/history db)))
+    (time-travel/history db)))
 
 (defn with
   "Speculative transaction against a db value: returns the report
@@ -146,4 +148,14 @@
   [db tx-data]
   (if (remote-db? db)
     (client/with db tx-data)
-    (core/db-with db tx-data)))
+    (time-travel/db-with db tx-data)))
+
+(defn db-t
+  "The db value's transaction counter t — the plain-map read accessor."
+  [db]
+  (core/db-t db))
+
+(defn db-storage
+  "The storage handle backing a db value — the plain-map read accessor."
+  [db]
+  (core/db-storage db))

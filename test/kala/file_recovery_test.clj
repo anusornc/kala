@@ -5,8 +5,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
             [kala.storage :as storage]
-            [kala.core :as core]
-            [kala.test-util :refer [define!]]))
+            [kala.test-util :refer [define!]]
+            [kala.time-travel :as time-travel]))
 
 (defn- tmp-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -16,7 +16,7 @@
 (defn- log-entries [db-dir]
   (-> (api/connect {:storage :file :path db-dir})
       api/db
-      ::core/storage
+      api/db-storage
       (storage/log-scan 0 Long/MAX_VALUE)))
 
 (defn- open-db [db-dir]
@@ -34,14 +34,14 @@
           name-aid (api/entid (api/db conn1) :person/name)
           age-aid (api/entid (api/db conn1) :person/age)
           entries-before (log-entries db-dir)
-          t-before (::core/t (open-db db-dir))]
+          t-before (api/db-t (open-db db-dir))]
       (testing "data readable in the writing process"
         (is (= ["Alice"] (mapv :v (api/datoms (api/db conn1) :eavt [alice name-aid])))))
 
       ;; second "process": reconnect over the same directory
       (let [db-reopened (open-db db-dir)]
         (testing "nothing lost, nothing double-applied"
-          (is (= t-before (::core/t db-reopened)))
+          (is (= t-before (api/db-t db-reopened)))
           (is (= (count entries-before) (count (log-entries db-dir))))
           (is (= [["Alice"] [30]]
                  (mapv (fn [aid]
@@ -53,13 +53,13 @@
               {:keys [tx-data]} (api/transact conn2 [[:db/add "bob" :person/name "Bob"]])]
           (testing "t continues monotonically after restart"
             (is (pos? (count tx-data)))
-            (is (> (::core/t (api/db conn2)) t-before)))
+            (is (> (api/db-t (api/db conn2)) t-before)))
           (testing "both processes' data coexist"
             (is (= 2 (count (api/q '[:find ?p :where [?p :person/name _]]
                                     (api/db conn2))))))
           (testing "time travel works against restored storage"
             (let [db-now (api/db conn2)
-                  first-t (core/eid->t (:tx (first (api/datoms db-now :eavt [alice name-aid]))))]
+                  first-t (time-travel/eid->t (:tx (first (api/datoms db-now :eavt [alice name-aid]))))]
               (is (= ["Alice"]
                      (mapv :v (api/datoms (api/as-of db-now first-t)
                                           :eavt [alice name-aid])))))))))))

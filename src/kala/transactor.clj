@@ -6,7 +6,7 @@
   to a t (as-of), a since view, or history when the request asks."
   (:require [clojure.edn :as edn]
             [kala.api :as api]
-            [kala.core :as core]
+            [kala.time-travel :as time-travel]
             [kala.wire :as wire])
   (:import [java.net InetAddress ServerSocket SocketException]
            [java.util.concurrent Executors]))
@@ -62,7 +62,7 @@
     :connect
     (if (= wire/protocol-version (:protocol-version msg))
       (ok {:protocol-version wire/protocol-version
-           :t (::core/t (api/db (:conn state)))})
+           :t (api/db-t (api/db (:conn state)))})
       (fail :protocol/version-mismatch
             (str "Protocol version mismatch: server "
                  wire/protocol-version ", client " (:protocol-version msg))
@@ -70,7 +70,7 @@
              :client-version (:protocol-version msg)}))
 
     :db
-    (ok {:t (::core/t (api/db (:conn state)))})
+    (ok {:t (api/db-t (api/db (:conn state)))})
 
     :transact
     (let [report (api/transact (:conn state) (:tx-data msg))]
@@ -80,7 +80,7 @@
            :tempids (:tempids report)}))
 
     :with
-    (let [report (core/db-with (db-at state msg) (:tx-data msg))
+    (let [report (time-travel/db-with (db-at state msg) (:tx-data msg))
           db-ref (remember-speculative state (:db-after report))]
       (ok {:t (:t report)
            :db-ref db-ref

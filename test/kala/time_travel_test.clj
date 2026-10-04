@@ -3,9 +3,9 @@
   retraction status, and speculative with()."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
-            [kala.core :as core]
             [kala.storage :as storage]
-            [kala.test-util :refer [define! fresh-conn]]))
+            [kala.test-util :refer [define! fresh-conn]]
+            [kala.time-travel :as time-travel]))
 
 (defn load-fixture! []
   (let [conn (fresh-conn)]
@@ -43,7 +43,7 @@
         (is (= #{30} (qv db3 '[:find ?a :in $ ?p :where [?p :person/age ?a]] alice)))
         (is (= 1 (count (qv db3 '[:find ?p :where [?p :person/name "Bob"]]))))))
     (testing "as-of the current t equals the current db"
-      (let [t-now (::core/t db-now)]
+      (let [t-now (api/db-t db-now)]
         (is (= (set (mapv #(select-keys % [:e :a :v]) (api/datoms db-now :eavt [alice])))
                (set (mapv #(select-keys % [:e :a :v])
                           (api/datoms (api/as-of db-now t-now) :eavt [alice])))))))
@@ -108,7 +108,7 @@
 (deftest with-leaves-storage-untouched
   (let [{:keys [conn]} (load-fixture!)
         db (api/db conn)
-        storage (::core/storage db)
+        storage (api/db-storage db)
         log-count (fn [] (count (storage/log-scan storage 0 Long/MAX_VALUE)))
         before (log-count)]
     (api/with db [[:db/add "ghost" :person/name "Ghost"]])
@@ -116,7 +116,7 @@
 
 (deftest since-accepts-raw-t-counters
   (let [{:keys [conn tx2 tx3]} (load-fixture!)
-        t2 (core/eid->t tx2)
+        t2 (time-travel/eid->t tx2)
         db-since (api/since (api/db conn) t2)]
     (testing "raw t counter normalizes to the same view as the tx eid"
       (is (= (api/since (api/db conn) tx2) db-since)))
