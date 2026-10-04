@@ -17,7 +17,7 @@
 
 (defn- unique-path []
   (str (java.nio.file.Files/createTempDirectory
-        (str "dos-suite-" (java.util.UUID/randomUUID))
+        (str "kala-suite-" (java.util.UUID/randomUUID))
         (make-array java.nio.file.attribute.FileAttribute 0))))
 
 (defn fresh-conn []

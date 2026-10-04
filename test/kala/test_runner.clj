@@ -18,6 +18,7 @@
             [kala.client-test]
             [kala.file-recovery-test]
             [kala.transactor-test]
+            [kala.wire-test]
             [kala.storage.memory-test]
             [kala.storage.file-test]))
 
@@ -37,6 +38,7 @@
   ['kala.client-test
    'kala.file-recovery-test
    'kala.transactor-test
+   'kala.wire-test
    'kala.storage.memory-test
    'kala.storage.file-test])
 
@@ -47,12 +49,12 @@
      :storage storage
      :path (when (= :file storage)
              (str (java.nio.file.Files/createTempDirectory
-                   (str "dos-matrix-" (name mode) "-" (java.util.UUID/randomUUID))
+                   (str "kala-matrix-" (name mode) "-" (java.util.UUID/randomUUID))
                    (make-array java.nio.file.attribute.FileAttribute 0))))}))
 
 (def ^:private tmp-root
   (java.nio.file.Files/createTempDirectory
-   (str "dos-runner-" (java.util.UUID/randomUUID))
+   (str "kala-runner-" (java.util.UUID/randomUUID))
    (make-array java.nio.file.attribute.FileAttribute 0)))
 
 (defn- run-counting [run-fn]

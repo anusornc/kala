@@ -78,11 +78,18 @@
 
 (defn open-storage
   "Open (or create) the storage rooted at path. Over an existing directory
-  every acked segment and log entry is preserved."
+  every acked segment and log entry is preserved. The append-time
+  monotonicity check compares against the last t held from open — under the
+  single-writer topology that is always the freshest acked entry; the adapter
+  does not re-derive it from the directory per commit."
   [path]
   (let [root (io/file path)
         _ (doseq [d [root (io/file root "segments") (io/file root "log")]]
-            (.mkdirs d))]
+            (.mkdirs d))
+        ;; cold start: one directory scan derives last-t; appends compare
+        ;; against the held value — the monotonicity check is O(1) per
+        ;; commit, matching the memory adapter's sorted-map cost model
+        last-t (atom (last (log-ts root)))]
     (reify storage/Storage
       (put-segment [_ id data]
         (write-obj (segment-file root id) data)
@@ -99,12 +106,15 @@
              vec))
       (append-log [_ entry]
         (let [t (:t entry)]
-          (when-let [last-t (last (log-ts root))]
-            (when (<= t last-t)
+          (when-let [prev @last-t]
+            (when (<= t prev)
               (throw (ex-info "Log :t must be strictly increasing"
                               {:kala/error :storage/non-monotonic-t
-                               :t t :last-t last-t}))))
+                               :t t :last-t prev}))))
+          ;; last-t advances only when the entry is acked — a failed write
+          ;; leaves the held value untouched, so the retry contract holds
           (write-obj (log-file root t) entry)
+          (reset! last-t t)
           :ok))
       (log-scan [_ from-t to-t]
         (->> (log-ts root)

@@ -10,7 +10,7 @@
 
 (defn- tmp-dir []
   (str (java.nio.file.Files/createTempDirectory
-        (str "dos-recovery-" (java.util.UUID/randomUUID))
+        (str "kala-recovery-" (java.util.UUID/randomUUID))
         (make-array java.nio.file.attribute.FileAttribute 0))))
 
 (defn- log-entries [db-dir]

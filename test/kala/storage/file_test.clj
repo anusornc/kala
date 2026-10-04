@@ -10,7 +10,7 @@
 
 (defn- tmp-dir []
   (str (Files/createTempDirectory
-        (str "dos-file-test-" (UUID/randomUUID))
+        (str "kala-file-test-" (UUID/randomUUID))
         (make-array java.nio.file.attribute.FileAttribute 0))))
 
 (def ^:private root (tmp-dir))
@@ -76,3 +76,21 @@
       (let [s2 (file/open-storage dir)]
         (is (= [2 3] (mapv :t (storage/log-scan s2 0 Long/MAX_VALUE))))
         (is (= {:v 42} (storage/get-segment s2 "seg/x")))))))
+
+(deftest append-after-fresh-open-enforces-monotonic-t
+  (testing "a reopened adapter derives last-t from the directory: the
+            next t appends, lower t throws — the cold-derive path for
+            the O(1) append check"
+    (let [dir (str root "/" (UUID/randomUUID))
+          s1 (file/open-storage dir)]
+      (storage/append-log s1 (entry 2))
+      (storage/append-log s1 (entry 3))
+      (let [s2 (file/open-storage dir)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"strictly increasing"
+                              (storage/append-log s2 (entry 3))))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"strictly increasing"
+                              (storage/append-log s2 (entry 2))))
+        (is (= :ok (storage/append-log s2 (entry 4))))
+        (is (= [2 3 4] (mapv :t (storage/log-scan s2 0 Long/MAX_VALUE))))))))

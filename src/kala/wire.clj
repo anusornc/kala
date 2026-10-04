@@ -50,7 +50,6 @@
                          len))]
             (when (= read len)
               (let [frame (String. buf StandardCharsets/UTF_8)]
-                (println :WIRE-READ (subs frame 0 (min 200 (count frame))))
                 (edn/read-string {:readers {'dos/b64 b64-decode
                                             'dos/float float
                                             'dos/uri to-uri}}
@@ -63,7 +62,6 @@
   [out msg]
   (let [dos (DataOutputStream. out)
         payload (.getBytes (pr-str (to-edn msg)) StandardCharsets/UTF_8)]
-    (println :WIRE-WRITE (subs (String. payload StandardCharsets/UTF_8) 0 (min 200 (alength payload))))
     (.writeInt dos (alength payload))
     (.write dos payload)
     (.flush dos)))
