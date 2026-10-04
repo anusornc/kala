@@ -5,7 +5,7 @@
             [kala.api :as api]
             [kala.core :as core]
             [kala.storage :as storage]
-            [kala.test-util :refer [define! fresh-conn]]
+            [kala.test-util :refer [assert-error define! fresh-conn]]
             [kala.time-travel :as time-travel]))
 
 (defn load-fixture! []
@@ -181,3 +181,30 @@
         (is (= 3 @scans) "one scan for history after the two as-ofs")
         (is (= hist (api/history db*)))
         (is (= 3 @scans) "the second history does not re-scan")))))
+
+(deftest rebuild-applies-retractions
+  ;; the fixture's tx6 retracts Alice's age — a rebuilt db must apply that
+  ;; retraction, not resurrect the retracted datom (a raw retraction datom
+  ;; carries the retracting tx; the indexed datom holds its asserting tx)
+  (let [{:keys [conn alice]} (load-fixture!)
+        db (api/db conn)
+        age-aid (api/entid db :person/age)
+        rebuilt (time-travel/restore-db (api/db-storage db))]
+    (is (= db rebuilt))
+    (is (empty? (api/datoms rebuilt :eavt [alice age-aid])))
+    (testing "as-of at the retracting tx replays the retraction too"
+      (api/transact conn [[:db/add "x" :person/name "X"]])
+      (is (= db (api/as-of (api/db conn) (api/db-t db)))))))
+
+(deftest rebuild-after-a-schema-retract-equals-the-live-db
+  ;; the prune lives in the shared tx-apply path, so replay prunes exactly
+  ;; what the transactor pruned — a rebuilt db is the transacted one
+  (let [{:keys [conn]} (load-fixture!)
+        age-eid (api/entid (api/db conn) :person/age)]
+    (api/transact conn [[:db.fn/retractEntity age-eid]])
+    (let [db (api/db conn)
+          rebuilt (time-travel/restore-db (api/db-storage db))]
+      (is (= db rebuilt))
+      (is (nil? (api/entid db :person/age)))
+      (assert-error :transact/unknown-attribute
+                    (api/transact conn [[:db/add "x" :person/age 1]])))))

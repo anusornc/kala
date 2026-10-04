@@ -4,7 +4,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
             [kala.core :as core]
-            [kala.test-util :refer [assert-error define! fresh-conn]]))
+            [kala.test-util :as test-util
+             :refer [assert-error define! fresh-conn]]))
 
 ;; ---- value-type validation --------------------------------------------------
 
@@ -82,6 +83,77 @@
       (assert-error :transact/unique-not-supported
                     (define! conn "t1" :t/tags :db.type/string
                              {:cardinality :db.cardinality/many :unique :db.unique/value})))))
+
+;; ---- schema retraction --------------------------------------------------------
+
+(deftest retracting-a-schema-attribute-entity-prunes-the-registry
+  (let [conn (fresh-conn)]
+    (define! conn "n" :t/name :db.type/string)
+    (define! conn "a" :t/age :db.type/long)
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "p" :t/name "Alice"]
+                                                [:db/add "p" :t/age 30]])
+          alice (get tempids "p")
+          age-eid (api/entid (api/db conn) :t/age)]
+      (api/transact conn [[:db.fn/retractEntity age-eid]])
+      (let [db (api/db conn)]
+        (testing "writing the retracted attribute raises"
+          (assert-error :transact/unknown-attribute
+                        (api/transact conn [[:db/add "q" :t/age 31]])))
+        (testing "query resolution raises like any unknown attribute"
+          (assert-error :query/unknown-attribute
+                        (api/q '[:find ?p :where [?p :t/age ?a]] db)))
+        (testing "pull resolution raises like any unknown attribute"
+          (assert-error :pull/unknown-attribute
+                        (api/pull db [:t/age] alice)))
+        (testing "entity and ident resolution behave as never-defined"
+          (is (nil? (api/entid db :t/age)))
+          ;; entity navigation is peer-only; there the dead attribute
+          ;; resolves like a never-defined one
+          (when (= :peer test-util/*access-mode*)
+            (is (nil? ((api/entity db alice) :t/age)))))))))
+
+(deftest schema-retract-shares-a-tx-with-data-retractions
+  ;; the registry must stay intact until every op of the pass has applied —
+  ;; pruning mid-pass would break the op that follows a schema retraction
+  (let [conn (fresh-conn)]
+    (define! conn "a" :t/age :db.type/long)
+    (define! conn "h" :t/height :db.type/long)
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "p" :t/age 30]
+                                                [:db/add "q" :t/height 180]])
+          p (get tempids "p")
+          q (get tempids "q")
+          db (api/db conn)
+          age-eid (api/entid db :t/age)
+          height-eid (api/entid db :t/height)]
+      (testing "data retract first, schema retract second"
+        (api/transact conn [[:db/retract p :t/age 30]
+                            [:db.fn/retractEntity age-eid]])
+        (let [db (api/db conn)]
+          (is (empty? (api/datoms db :eavt [p])))
+          (is (nil? (api/entid db :t/age)))))
+      (testing "schema retract first, data retract second"
+        (api/transact conn [[:db.fn/retractEntity height-eid]
+                            [:db/retract q :t/height 180]])
+        (let [db (api/db conn)]
+          (is (empty? (api/datoms db :eavt [q])))
+          (is (nil? (api/entid db :t/height))))))))
+
+(deftest data-written-before-a-schema-retract-still-reads
+  (let [conn (fresh-conn)]
+    (define! conn "a" :t/age :db.type/long)
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "p" :t/age 30]])
+          p (get tempids "p")
+          t-data (get tempids :db/current-tx)
+          age-eid (api/entid (api/db conn) :t/age)]
+      (api/transact conn [[:db.fn/retractEntity age-eid]])
+      (let [db-now (api/db conn)]
+        (testing "the orphaned data datom survives the registry prune"
+          ;; with the ident gone, public-datom falls back to the raw attr id
+          (is (= [{:e p :a age-eid :v 30}]
+                 (mapv #(select-keys % [:e :a :v]) (api/datoms db-now :eavt [p])))))
+        (testing "an as-of before the retract still resolves the attribute"
+          (let [db-at (api/as-of db-now t-data)]
+            (is (= [30] (mapv :v (api/datoms db-at :eavt [p (api/entid db-at :t/age)]))))))))))
 
 ;; ---- cardinality ------------------------------------------------------------
 

@@ -55,10 +55,11 @@
                   db (reduce (fn [db ^Datom d]
                                (if (or history? (.added d))
                                  (tx/update-indexes db conj d)
-                                 (tx/update-indexes db disj d)))
+                                 (tx/retract-from-indexes db d)))
                              db datoms)]
               (-> db
                   (tx/register-new-entities datoms)
+                  (tx/prune-retracted-schema datoms)
                   (restore-next-idx datoms)
                   (assoc ::core/t t))))
           (core/empty-db storage)

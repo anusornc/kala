@@ -120,6 +120,18 @@
           db
           (vals core/index-specs)))
 
+;; Public for kala.time-travel: replay applies a logged retraction through
+;; this primitive, not raw disj. A raw retraction datom carries the RETRACTING
+;; tx, which no indexed datom shares (indexes hold asserting txs), and the
+;; index comparator orders by (e a v tx) — disj by the retraction itself would
+;; never match. The datom it retracts is the unique live datom with its
+;; (e a v) — the same lookup the live path performs in apply-retract — and an
+;; absent datom means already retracted: a no-op, as on the live path.
+(defn retract-from-indexes [db ^Datom d]
+  (if-some [current (current-datom db (.e d) (.a d) (.v d))]
+    (update-indexes db disj current)
+    db))
+
 (defn- add-datom [db ^Datom d]
   [(update-indexes db conj d)
    [d]])
@@ -310,6 +322,34 @@
               touched))
     db))
 
+;; Schema is data on the way out too: a tx that retracts an entity's :db/ident
+;; datom kills the attribute that entity defined, so the registry entries die
+;; with it. Prune reads the same datom list register-new-entities does and runs
+;; AFTER the datom pass — retract-entity resolves ref/component attributes
+;; through the registry mid-pass, so the registry must stay intact until every
+;; op has applied. Keying on the ident datom (rather than "entity gone") keeps
+;; a rebuilt db consistent: re-derivation on replay needs the ident datom to
+;; register, so the live db must drop the entry the moment its ident datom is
+;; retracted. Orphaned data datoms of the dead attribute stay in the indexes;
+;; only the registry is pruned. Public for kala.time-travel.
+(defn prune-retracted-schema [db datoms]
+  (if-some [ident-aid (get (::core/idents db) :db/ident)]
+    (let [dead (into #{}
+                     (comp (filter (fn [^Datom d]
+                                     (and (not (.added d)) (= ident-aid (.a d)))))
+                           (map (fn [^Datom d] (.e d))))
+                     datoms)]
+      (reduce (fn [db e]
+                (if-some [attr (get (::core/schema-by-id db) e)]
+                  (-> db
+                      (update ::core/schema-by-id dissoc e)
+                      (update ::core/schema-by-ident dissoc (:ident attr))
+                      (update ::core/idents dissoc (:ident attr)))
+                  db))
+              db
+              dead))
+    db))
+
 (defn transact-report
   "Pure transaction: applies tx-data against a db value and returns the
   report {:db-before :db-after :t :tx-data :tempids :raw-datoms} WITHOUT
@@ -356,7 +396,9 @@
           (let [attr (get (::core/schema-by-id db-after) (core/attr-eid :db/txInstant))
                 [db' ds] (apply-add db-after tx attr tx (java.util.Date.))]
             [db' ds]))
-        db-after (register-new-entities db-stamped datoms)
+        db-after (-> db-stamped
+                     (register-new-entities datoms)
+                     (prune-retracted-schema datoms))
         final-db (assoc db-after ::core/t t)]
     {:db-before db-before
      :db-after final-db
