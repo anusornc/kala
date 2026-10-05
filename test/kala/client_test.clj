@@ -6,7 +6,8 @@
             [kala.api :as api]
             [kala.client :as client]
             [kala.transactor :as tx]
-            [kala.test-util :refer [define!]]))
+            [kala.test-util :refer [define!]]
+            [kala.wire :as wire]))
 
 (defn- tmp-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -95,3 +96,56 @@
                (catch clojure.lang.ExceptionInfo e
                  (is (= :client/peer-only (:kala/error (ex-data e))))))))
       (finally ((:stop! t))))))
+
+;; ---- error-data parity (#26) ---------------------------------------------------
+
+(defn- err-keys [f]
+  (try (f) nil
+    (catch clojure.lang.ExceptionInfo e
+      (sort (disj (into #{} (keys (ex-data e))) :kala/error)))))
+
+(defn- load-parity-fixture! [conn]
+  (define! conn "n" :person/name :db.type/string)
+  (define! conn "a" :person/age :db.type/long)
+  (define! conn "f" :person/friend :db.type/ref)
+  (define! conn "em" :person/email :db.type/string {:unique :db.unique/value})
+  (api/transact conn [[:db/add "alice" :person/name "Alice"]]))
+
+(deftest error-data-parity-between-peer-and-client
+  (let [t (start-transactor!)
+        pconn (api/connect {:storage :memory :name "peer"})
+        cconn (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})
+        ;; each trigger takes a connection and raises exactly one kind
+        triggers [[:pull/unknown-attribute
+                   #(api/pull (api/db %) [:person/nope] 1)]
+                  [:transact/unknown-attribute
+                   #(api/transact % [[:db/add "x" :person/nope 1]])]
+                  [:transact/unknown-ident
+                   #(api/transact % [[:db/add "alice" :person/friend :no/such]])]
+                  [:transact/bad-value-type
+                   #(api/transact % [[:db/add "x" :person/age :oops]])]
+                  [:transact/unique-conflict
+                   #(do (api/transact % [[:db/add "x" :person/email "a@x"]])
+                        (api/transact % [[:db/add "y" :person/email "a@x"]]))]
+                  [:query/unknown-attribute
+                   #(api/q '[:find ?x :where [?x :person/nope 1]] (api/db %))]
+                  [:query/bad-clause
+                   #(api/q '[:find ?x :where 5] (api/db %))]
+                  [:datoms/unknown-index
+                   #(api/datoms (api/db %) :nope [])]
+                  [:db/view-not-writable
+                   #(api/with (api/since (api/db %) 1) [[:db/add "x" :person/name "y"]])]]]
+    (try
+      (load-parity-fixture! pconn)
+      (load-parity-fixture! cconn)
+      (testing "each error kind ships the same data keys in both modes"
+        (doseq [[kind trigger] triggers]
+          (let [peer-keys (err-keys #(trigger pconn))
+                client-keys (err-keys #(trigger cconn))]
+            (is (= (sort (wire/error-data-keys-for kind)) peer-keys)
+                (str kind " carries exactly its whitelisted keys in peer mode"))
+            (is (= peer-keys client-keys)
+                (str kind " client mode receives what peer mode carries")))))
+      (finally
+        ((:stop! t))
+        (when-some [p (:socket pconn)] (client/close p))))))

@@ -69,8 +69,10 @@ commit order. Broken listener sockets are dropped silently.
 
 ## Write ordering
 
-The transactor is the database's single writer: concurrent `:transact`
-requests serialize through one lock into a single total order of `t`.
+The transactor is the database's single writer: concurrent write requests
+serialize through one lock into a single total order of `t`. Which ops are
+write ops is declared in the protocol's op table (currently only
+`:transact`); the lock keys off that declaration, not per-op code.
 
 ## Durability
 

@@ -57,58 +57,72 @@
       (catch Exception _
         (swap! listeners disj out)))))
 
+;; One handler per op in the wire table (kala.wire/ops); handle-op dispatches
+;; by lookup, and a transactor-test pins the two key sets equal — an op added
+;; to the table without a handler (or the reverse) fails loudly.
+(def ^:private handlers
+  {:connect
+   (fn [{:keys [conn]} msg]
+     (if (= wire/protocol-version (:protocol-version msg))
+       (ok {:protocol-version wire/protocol-version
+            :t (api/db-t (api/db conn))})
+       (fail :protocol/version-mismatch
+             (str "Protocol version mismatch: server "
+                  wire/protocol-version ", client " (:protocol-version msg))
+             {:server-version wire/protocol-version
+              :client-version (:protocol-version msg)})))
+
+   :db
+   (fn [{:keys [conn]} _msg]
+     (ok {:t (api/db-t (api/db conn))}))
+
+   :transact
+   (fn [state msg]
+     (let [report (api/transact (:conn state) (:tx-data msg))]
+       (notify! (:listeners state) {:notification :tx-completed :t (:t report)})
+       (ok {:t (:t report)
+            :tx-data (public-datoms (:tx-data report))
+            :tempids (:tempids report)})))
+
+   :with
+   (fn [state msg]
+     (let [report (time-travel/db-with (db-at state msg) (:tx-data msg))
+           db-ref (remember-speculative state (:db-after report))]
+       (ok {:t (:t report)
+            :db-ref db-ref
+            :tx-data (public-datoms (:tx-data report))
+            :tempids (:tempids report)})))
+
+   :q
+   (fn [state msg]
+     (ok {:rows (apply api/q (:query msg) (db-at state msg) (:args msg))}))
+
+   :pull
+   (fn [state msg]
+     (ok {:doc (api/pull (db-at state msg) (:pattern msg) (:eid msg))}))
+
+   :datoms
+   (fn [state msg]
+     (ok {:datoms (public-datoms
+                   (api/datoms (db-at state msg) (:index msg) (:components msg)))}))
+
+   :listen
+   (fn [_state _msg]
+     (ok {:listening true}))})
+
 (defn- handle-op [state msg]
-  (condp = (:op msg)
-    :connect
-    (if (= wire/protocol-version (:protocol-version msg))
-      (ok {:protocol-version wire/protocol-version
-           :t (api/db-t (api/db (:conn state)))})
-      (fail :protocol/version-mismatch
-            (str "Protocol version mismatch: server "
-                 wire/protocol-version ", client " (:protocol-version msg))
-            {:server-version wire/protocol-version
-             :client-version (:protocol-version msg)}))
-
-    :db
-    (ok {:t (api/db-t (api/db (:conn state)))})
-
-    :transact
-    (let [report (api/transact (:conn state) (:tx-data msg))]
-      (notify! (:listeners state) {:notification :tx-completed :t (:t report)})
-      (ok {:t (:t report)
-           :tx-data (public-datoms (:tx-data report))
-           :tempids (:tempids report)}))
-
-    :with
-    (let [report (time-travel/db-with (db-at state msg) (:tx-data msg))
-          db-ref (remember-speculative state (:db-after report))]
-      (ok {:t (:t report)
-           :db-ref db-ref
-           :tx-data (public-datoms (:tx-data report))
-           :tempids (:tempids report)}))
-
-    :q
-    (ok {:rows (apply api/q (:query msg) (db-at state msg) (:args msg))})
-
-    :pull
-    (ok {:doc (api/pull (db-at state msg) (:pattern msg) (:eid msg))})
-
-    :datoms
-    (ok {:datoms (public-datoms
-                  (api/datoms (db-at state msg) (:index msg) (:components msg)))})
-
-    :listen
-    (ok {:listening true})
-
+  (if-some [h (get handlers (:op msg))]
+    (h state msg)
     (fail :transactor/unknown-op "Unknown op" {:op (:op msg)})))
 
 (defn- handle [state msg]
   (try
     (handle-op state msg)
     (catch clojure.lang.ExceptionInfo e
-      (fail (or (:kala/error (ex-data e)) :transactor/error)
-            (.getMessage e)
-            (select-keys (ex-data e) [:attribute :e :t :index :op])))
+      (let [kind (or (:kala/error (ex-data e)) :transactor/error)]
+        (fail kind
+              (.getMessage e)
+              (select-keys (ex-data e) (wire/error-data-keys-for kind)))))
     (catch Exception e
       (fail :transactor/error (.getMessage e) {}))))
 
@@ -132,7 +146,9 @@
                           first-msg?
                           (handle state msg)
 
-                          (= :transact (:op msg))
+                          ;; kala.wire/ops owns the single-writer invariant:
+                          ;; whatever it flags :is-write? serializes here
+                          (wire/write-op? (:op msg))
                           (do
                             (.lock lock)
                             (try

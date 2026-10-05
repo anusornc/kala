@@ -189,3 +189,9 @@
 (deftest parse-config-reads-edn
   (is (= {:port 4334 :storage :file :path "/var/db"}
          (tx/parse-config "{:port 4334 :storage :file :path \"/var/db\"}"))))
+
+(deftest op-handlers-cover-the-wire-table
+  ;; every op the protocol table declares has a transactor-side handler, and
+  ;; no handler exists for an op the table doesn't know (#26)
+  (is (= (set (keys wire/ops))
+         (set (keys @#'kala.transactor/handlers)))))

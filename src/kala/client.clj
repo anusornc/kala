@@ -33,6 +33,15 @@
     (wire/write-msg (:out c) msg)
     (wire/read-msg (:in c))))
 
+;; db-marker fields (:t / :since-t / :history / :db-ref) ride only the ops
+;; the wire table flags :db-reference? — the table is the one place that
+;; knows which ops address a named db value
+(defn- request-db [^RemoteDb db op base]
+  (request (:conn db)
+           (cond-> base
+             (:db-reference? (wire/op-spec op))
+             (merge (db-extras db)))))
+
 (defn- check [reply]
   (if (= :ok (:status reply))
     reply
@@ -85,28 +94,25 @@
   "Run a Datalog query server-side against the remote db; extra :in inputs
   (beyond $) travel in :args."
   [query ^RemoteDb db & inputs]
-  (let [reply (check (request (:conn db)
-                              (merge {:op :q
-                                      :query query
-                                      :args (vec inputs)}
-                                     (db-extras db))))]
+  (let [reply (check (request-db db :q
+                                {:op :q
+                                 :query query
+                                 :args (vec inputs)}))]
     (:rows reply)))
 
 (defn pull
   "Pull a document server-side."
   [^RemoteDb db pattern eid]
-  (let [reply (check (request (:conn db)
-                              (merge {:op :pull :pattern pattern :eid eid}
-                                     (db-extras db))))]
+  (let [reply (check (request-db db :pull
+                                {:op :pull :pattern pattern :eid eid}))]
     (:doc reply)))
 
 (defn datoms
   "Enumerate datoms server-side. Datoms arrive as plain maps with
   :e :a :v :tx :added (attribute idents as :a)."
   [^RemoteDb db index components]
-  (let [reply (check (request (:conn db)
-                              (merge {:op :datoms :index index :components components}
-                                     (db-extras db))))]
+  (let [reply (check (request-db db :datoms
+                                {:op :datoms :index index :components components}))]
     (:datoms reply)))
 
 (defn entid
@@ -115,11 +121,10 @@
   [^RemoteDb db ident]
   (if (int? ident)
     ident
-    (let [rows (:rows (check (request (:conn db)
-                                      (merge {:op :q
-                                              :query '[:find ?e :in $ ?i :where [?e :db/ident ?i]]
-                                              :args [ident]}
-                                             (db-extras db)))))]
+    (let [rows (:rows (check (request-db db :q
+                                        {:op :q
+                                         :query '[:find ?e :in $ ?i :where [?e :db/ident ?i]]
+                                         :args [ident]})))]
       (ffirst rows))))
 
 (defn as-of
@@ -145,8 +150,8 @@
   until the transactor drops it."
   [^RemoteDb db tx-data]
   (let [{:keys [t db-ref tx-data tempids]}
-        (check (request (:conn db)
-                        (merge {:op :with :tx-data tx-data} (db-extras db))))]
+        (check (request-db db :with
+                           {:op :with :tx-data tx-data}))]
     {:db-before (->RemoteDb (:conn db) :current (dec t) nil)
      :db-after (->RemoteDb (:conn db) :spec nil db-ref)
      :t t
