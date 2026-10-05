@@ -222,7 +222,8 @@
 
 (defn lookup-attr
   "An attribute's schema map by ident or by attr id, or nil. Public for
-  kala.tx's op resolution and map-form expansion."
+  kala.tx's op resolution and map-form expansion, and for kala.entity /
+  kala.pull, which shape raw bridge datoms by attr id."
   [db ident-or-id]
   (or (get (::schema-by-ident db) ident-or-id)
       (get (::schema-by-id db) ident-or-id)))
@@ -258,8 +259,8 @@
 
 (defn slice
   "The contiguous run of one index matching a prefix of components, eager.
-  Public for kala.tx: current-datom lookups and entity retraction read
-  through the same primitive as every other slice."
+  Public for kala.tx (current-datom lookups, entity retraction) and the
+  entity/pull readers — the same primitive as every other slice."
   [index-set index comps]
   ;; Eager vector: every caller reduces the slice immediately; laziness only
   ;; added a LazySeq allocation per element.
@@ -317,8 +318,10 @@
           (swap! a assoc k m)
           m))))
 
-;; Bridges for the query engine (kala.query), which works on
-;; raw datoms with attribute ids.
+;; Bridges for the query engine (kala.query) and the entity/pull readers,
+;; which work on raw datoms with attribute ids. Ident translation lives at
+;; each consumer's boundary: idents resolve to schema maps once per spec
+;; (:id carries the attr id), and attr-ident maps back for output shaping.
 (defn attribute [db ident]
   (get (::schema-by-ident db) ident))
 
@@ -358,12 +361,31 @@
 (defn many-attr? [attr]
   (= :db.cardinality/many (:cardinality attr)))
 
+(defn attr-ident
+  "An attr id's ident, or the raw id when no schema entry exists — the same
+  fallback public-datom applies. Public for kala.entity and kala.pull,
+  which key touch and wildcard output by ident."
+  [db a-id]
+  (or (:ident (get (::schema-by-id db) a-id)) a-id))
+
+(defn ref-entid
+  "Resolution for a ref slot's value: keywords must resolve to an entity id
+  (:transact/unknown-ident otherwise); everything else passes through. On
+  VAET the sought entity rides the ref-typed :v slot, so kala.entity and
+  kala.pull resolve reverse-read eids through this rule — the same one
+  resolve-components applies. Public for kala.entity and kala.pull."
+  [db a-id v]
+  (let [a (get (::schema-by-id db) a-id)]
+    (if (and (keyword? v) a (= :db.type/ref (:value-type a)))
+      (or (entid db v)
+          (err :transact/unknown-ident "No entity with ident" {:ident v}))
+      v)))
+
 (defn public-datom
   "The public shape of a datom: attribute resolved to its ident. Public for
   kala.tx, which reports :tx-data in the same shape readers see."
   [db ^Datom d]
-  (let [ident (or (:ident (get (::schema-by-id db) (.a d))) (.a d))]
-    (->Datom (.e d) ident (.v d) (.tx d) (.added d))))
+  (->Datom (.e d) (attr-ident db (.a d)) (.v d) (.tx d) (.added d)))
 
 (defn- resolve-components [db index components]
   (let [comps (->> (vec components)
@@ -377,12 +399,7 @@
                 (:id (or (lookup-attr db x)
                          (err :transact/unknown-attribute "Unknown attribute" {:attribute x}))))
         e-res (fn [x] (if (keyword? x) (entid db x) x))
-        v-res (fn [a-id v]
-                (let [a (get (::schema-by-id db) a-id)]
-                  (if (and (keyword? v) a (= :db.type/ref (:value-type a)))
-                    (or (entid db v)
-                        (err :transact/unknown-ident "No entity with ident" {:ident v}))
-                    v)))
+        v-res (partial ref-entid db)
         ;; resolve :a and :e slots first (:v needs the :a slot's attr id)
         pass1 (reduce (fn [acc i]
                         (assoc acc i

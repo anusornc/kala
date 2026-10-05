@@ -63,6 +63,11 @@
 
 (declare pull-forward pull-reverse wildcard-attr)
 
+;; the :e-slot rule resolve-components applies: keywords resolve, everything
+;; else is already an entity id
+(defn- kw-entid [db x]
+  (if (keyword? x) (core/entid db x) x))
+
 ;; Shared tail for every attr spec: absent-value options and keying by the
 ;; original spec form (:ns/_attr for reverse specs, :as override if given).
 (defn- finish-attr [spec absent? v]
@@ -90,24 +95,25 @@
 
 (defn- pull-forward [db e spec]
   (let [{:keys [attr opts pattern]} spec
-        _ (when-not (core/attribute db attr)
-            (err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
-        vs (map :v (core/datoms db :eavt [e attr]))
+        attr-map (or (core/attribute db attr)
+                     (err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
+        vs (map :v (core/entity-datoms db (:id attr-map) (kw-entid db e)))
         vs (if-some [lim (:limit opts)] (take lim vs) vs)
         vals (if pattern
                (mapv (fn [v] (pull-entity* db pattern v)) vs)
                (vec vs))
         absent? (empty? vals)
         v (cond absent? nil
-                (core/many-attr? (core/attribute db attr)) vals
+                (core/many-attr? attr-map) vals
                 :else (first vals))]
     (finish-attr spec absent? v)))
 
 (defn- pull-reverse [db e spec]
   (let [{:keys [attr opts pattern]} spec
-        _ (when-not (core/attribute db attr)
-            (err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
-        referrers (map :e (core/datoms db :vaet [e attr]))
+        attr-map (or (core/attribute db attr)
+                     (err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
+        referrers (map :e (core/index-slice
+                           db :vaet [(core/ref-entid db (:id attr-map) e) (:id attr-map)]))
         referrers (if-some [lim (:limit opts)] (take lim referrers) referrers)
         vals (if pattern
                (mapv (fn [r] (pull-entity* db pattern r)) referrers)
@@ -116,17 +122,18 @@
 
 (defn- wildcard-attr [db e]
   (reduce (fn [m d]
-            (let [a (:a d)]
+            (let [attr (core/lookup-attr db (:a d))
+                  a (or (:ident attr) (:a d))]
               (cond
-                (core/many-attr? (core/attribute db a))
+                (core/many-attr? attr)
                 (update m a (fnil conj []) (:v d))
                 :else (assoc m a (:v d)))))
           {:db/id e}
-          (core/datoms db :eavt [e])))
+          (core/index-slice db :eavt [(kw-entid db e)])))
 
 (defn pull
   "Shape one entity into a document per the pull pattern. Entities without
   datoms pull as nil."
   [db pattern eid]
-  (when (seq (core/datoms db :eavt [eid]))
+  (when (seq (core/index-slice db :eavt [(kw-entid db eid)]))
     (pull-entity* db (parse-pattern pattern) eid)))

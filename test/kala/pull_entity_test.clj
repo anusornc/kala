@@ -114,6 +114,58 @@
          (catch clojure.lang.ExceptionInfo e
            (is (= :pull/unknown-attribute (:kala/error (ex-data e))))))))
 
+(deftest pull-reverse-limit-and-referrer-order
+  (let [conn (load-fixture!)
+        {:keys [alice bob]} (fixture-ids (api/db conn))]
+    ;; reference bob by its resolved eid — "bob" as a tempid here would
+    ;; mint a fresh entity (:person/name carries no upsert)
+    (api/transact conn [[:db/add "dave" :person/name "Dave"]
+                        [:db/add "dave" :person/friend bob]])
+    (let [db (api/db conn)
+          dave (first (mapv :e (api/datoms db :avet [(api/entid db :person/name) "Dave"])))]
+      (testing "referrers come back in vaet (entity id) order"
+        (is (= ["Alice" "Dave"]
+               (mapv :person/name (:person/_friend
+                                   (api/pull db '[{:person/_friend [:person/name]}] bob))))))
+      (testing ":limit truncates referrers (entity ids without a map spec)"
+        (is (= [alice]
+               (:person/_friend (api/pull db '[[:person/_friend :limit 1]] bob)))))
+      (testing "entity reverse navigation follows the same order"
+        (is (= [alice dave]
+               (mapv :db/id ((api/entity db bob) :person/_friend))))))))
+
+(deftest pull-with-resolvable-keyword-eid
+  (let [conn (load-fixture!)]
+    ;; :person/name resolves through ::idents to the schema entity; the doc's
+    ;; :db/id stays the keyword as passed
+    (is (= {:db/id :person/name}
+           (api/pull (api/db conn) '[:person/name] :person/name)))))
+
+(deftest pull-with-unresolvable-keyword-eid
+  (let [conn (load-fixture!)]
+    ;; pinned: the slice entry check meets an unresolved nil eid in the
+    ;; index comparator — accidental, but preserved by the bridge switch
+    (is (thrown? NullPointerException
+                 (api/pull (api/db conn) '[*] :nope/unknown)))))
+
+(deftest entity-reverse-nav-unresolvable-keyword-eid-errors
+  (let [conn (load-fixture!)
+        {:keys [bob]} (fixture-ids (api/db conn))]
+    ;; pinned: on VAET the sought entity rides the ref-typed :v slot, so the
+    ;; keyword must resolve (core/ref-entid — the rule resolve-components
+    ;; applies); pull never reaches this rule, its entry check NPEs first
+    (try (:person/_friend (api/entity (api/db conn) :nope/unknown))
+         (is false "expected ex-info")
+         (catch clojure.lang.ExceptionInfo e
+           (is (= :transact/unknown-ident (:kala/error (ex-data e))))
+           (is (= "No entity with ident" (.getMessage e)))
+           (is (= :nope/unknown (get (ex-data e) :ident)))))))
+
+(deftest touch-with-unresolvable-keyword-eid
+  (let [conn (load-fixture!)]
+    (is (thrown? NullPointerException
+                 (api/touch (api/entity (api/db conn) :nope/unknown))))))
+
 ;; ---- pull inside queries -----------------------------------------------------
 
 (deftest pull-expressions-inside-queries
@@ -144,6 +196,26 @@
              (mapv :db/id ((api/entity (api/db conn) bob) :person/_friend)))))
     (testing "unknown attributes return nil"
       (is (nil? (e :person/email))))))
+
+(deftest entity-reverse-nav-unknown-attribute-errors
+  (let [conn (load-fixture!)
+        {:keys [bob]} (fixture-ids (api/db conn))]
+    ;; pinned: resolve-components' error shape — the reverse arm resolves the
+    ;; attribute eagerly and the error carries the forward form
+    (try (:person/_nope (api/entity (api/db conn) bob))
+         (is false "expected ex-info")
+         (catch clojure.lang.ExceptionInfo e
+           (is (= :transact/unknown-attribute (:kala/error (ex-data e))))
+           (is (= "Unknown attribute" (.getMessage e)))
+           (is (= :person/nope (get (ex-data e) :attribute)))))))
+
+(deftest entity-point-read-with-unresolvable-keyword-eid-is-absent
+  (let [conn (load-fixture!)
+        e (api/entity (api/db conn) :nope/unknown)]
+    ;; :db/id passes the keyword through; point reads through the bridge's
+    ;; hash views return absent (the old slow path NPE'd in the comparator)
+    (is (= :nope/unknown (:db/id e)))
+    (is (nil? (:person/name e)))))
 
 (deftest touch-expands-components-to-plain-maps
   (let [conn (load-fixture!)
