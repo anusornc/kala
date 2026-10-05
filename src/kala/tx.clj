@@ -323,7 +323,8 @@
     db))
 
 ;; Schema is data on the way out too: a tx that retracts an entity's :db/ident
-;; datom kills the attribute that entity defined, so the registry entries die
+;; datom kills what that entity registered — an attribute's full entries, or
+;; an ident-only entity's ::idents entry — so the registry entries die
 ;; with it. Prune reads the same datom list register-new-entities does and runs
 ;; AFTER the datom pass — retract-entity resolves ref/component attributes
 ;; through the registry mid-pass, so the registry must stay intact until every
@@ -345,7 +346,18 @@
                       (update ::core/schema-by-id dissoc e)
                       (update ::core/schema-by-ident dissoc (:ident attr))
                       (update ::core/idents dissoc (:ident attr)))
-                  db))
+                  ;; Ident-only entity (an enum): it holds no attribute
+                  ;; entries, just the ::idents one. Drop the entries pointing
+                  ;; at it unless the entity's slice still carries that ident
+                  ;; — a same-tx re-assertion or move was already re-derived
+                  ;; by register-new-entities, keyed on the surviving ident.
+                  (let [current-ident (when-some [^Datom d (current-datom-any-v db e ident-aid)]
+                                        (.v d))]
+                    (update db ::core/idents
+                            (fn [m]
+                              (into {} (remove (fn [[ident holder]]
+                                                 (and (= holder e) (not= ident current-ident))))
+                                     m))))))
               db
               dead))
     db))

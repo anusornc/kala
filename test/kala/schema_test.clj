@@ -155,6 +155,39 @@
           (let [db-at (api/as-of db-now t-data)]
             (is (= [30] (mapv :v (api/datoms db-at :eavt [p (api/entid db-at :t/age)]))))))))))
 
+(deftest retracting-an-enum-entity-prunes-its-idents-entry
+  ;; an ident-only entity (a :db/ident with no :db/valueType) registers only
+  ;; in ::idents, never in the attribute tables — its entry must die with the
+  ;; retraction like an attribute's does
+  (let [conn (fresh-conn)]
+    (api/transact conn [[:db/add "x" :db/ident :t/red]])
+    (let [red (api/entid (api/db conn) :t/red)]
+      (testing "retractEntity drops the ident resolution"
+        (api/transact conn [[:db.fn/retractEntity red]])
+        (is (nil? (api/entid (api/db conn) :t/red)))))
+    (testing "retracting the ident datom directly drops it too"
+      (api/transact conn [[:db/add "y" :db/ident :t/blue]])
+      (let [blue (api/entid (api/db conn) :t/blue)]
+        (api/transact conn [[:db/retract blue :db/ident :t/blue]])
+        (is (nil? (api/entid (api/db conn) :t/blue)))))))
+
+(deftest enum-ident-survives-same-tx-redefinition
+  ;; the prune drops only entries the entity's slice no longer justifies: a
+  ;; same-tx re-assertion re-registers, and a move re-points the ident at the
+  ;; new entity — register-new-entities runs before the prune
+  (let [conn (fresh-conn)]
+    (api/transact conn [[:db/add "x" :db/ident :t/red]])
+    (let [red (api/entid (api/db conn) :t/red)]
+      (testing "retract and re-assert on the same entity stays registered"
+        (api/transact conn [[:db/retract red :db/ident :t/red]
+                            [:db/add red :db/ident :t/red]])
+        (is (= red (api/entid (api/db conn) :t/red))))
+      (testing "retract here, re-define elsewhere points at the new entity"
+        (let [{:keys [tempids]} (api/transact conn [[:db/retract red :db/ident :t/red]
+                                                    [:db/add "z" :db/ident :t/red]])]
+          (is (= (get tempids "z") (api/entid (api/db conn) :t/red)))
+          (is (not= red (api/entid (api/db conn) :t/red))))))))
+
 ;; ---- cardinality ------------------------------------------------------------
 
 (deftest cardinality-many-duplicate-add-is-a-noop

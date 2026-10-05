@@ -208,3 +208,21 @@
       (is (nil? (api/entid db :person/age)))
       (assert-error :transact/unknown-attribute
                     (api/transact conn [[:db/add "x" :person/age 1]])))))
+
+(deftest rebuild-after-an-enum-retract-equals-the-live-db
+  ;; ident-only entities prune through the same shared path, so a rebuilt db
+  ;; drops the ::idents entry the live one dropped — both retraction forms
+  (let [conn (fresh-conn)]
+    (api/transact conn [[:db/add "x" :db/ident :t/red]
+                        [:db/add "y" :db/ident :t/blue]])
+    (let [red (api/entid (api/db conn) :t/red)
+          blue (api/entid (api/db conn) :t/blue)]
+      (api/transact conn [[:db.fn/retractEntity red]
+                          [:db/retract blue :db/ident :t/blue]])
+      (let [db (api/db conn)
+            rebuilt (time-travel/restore-db (api/db-storage db))]
+        (is (= db rebuilt))
+        (is (nil? (api/entid db :t/red)))
+        (is (nil? (api/entid rebuilt :t/red)))
+        (is (nil? (api/entid db :t/blue)))
+        (is (nil? (api/entid rebuilt :t/blue)))))))
