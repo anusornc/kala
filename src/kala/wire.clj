@@ -70,8 +70,9 @@
 ;; EDN-safe (they ride the reply frame). Every kind the transactor's
 ;; handlers can see is enumerated — including storage failures raised
 ;; mid-transact; kinds that can only surface outside a reply (peer-side
-;; connect, the client's own boundary) are enumerated too. Unknown kinds
-;; keep the historical whitelist.
+;; connect, the client's own boundary) are enumerated too. A kind's keys
+;; are the union its raise sites carry; a site may ship a subset. Unknown
+;; kinds keep the historical whitelist.
 
 (def error-data-keys
   {:protocol/version-mismatch [:server-version :client-version]
@@ -98,7 +99,7 @@
    :transact/nested-map-requires-component [:attribute]
    :datoms/unknown-index [:index]
    :datoms/bad-components [:index :components]
-   :pull/bad-pattern [:expr :option :element :pattern]
+   :pull/bad-pattern [:expr :option :element :pattern :spec]
    :pull/unknown-attribute [:attribute]
    :query/bad-query []
    :query/no-db []

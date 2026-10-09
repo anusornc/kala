@@ -233,9 +233,6 @@
 (defn- low-bound [index comps]
   (let [{:keys [fields]} (index-specs index)
         n (count comps)
-        _ (when (> n 3)
-            (err :datoms/bad-components
-                 "Index prefixes have at most e/a/v components" {:index index :components comps}))
         field-pos (zipmap fields (range))
         slot (fn [field fill]
                (let [i (field-pos field)]
@@ -394,6 +391,9 @@
                    reverse
                    vec)
         n (count comps)
+        _ (when (> n 3)
+            (err :datoms/bad-components
+                 "Index prefixes have at most e/a/v components" {:index index :components comps}))
         fields (vec (butlast (:fields (index-specs index))))
         a-res (fn [x]
                 (:id (or (lookup-attr db x)
