@@ -226,3 +226,19 @@
         (is (nil? (api/entid rebuilt :t/red)))
         (is (nil? (api/entid db :t/blue)))
         (is (nil? (api/entid rebuilt :t/blue)))))))
+
+(deftest rebuild-after-a-same-tx-attribute-redefinition-equals-the-live-db
+  ;; ADR-0003: register re-derives the net state before the prune drops the
+  ;; entries it no longer justifies — replay runs the same shared path, so a
+  ;; rebuilt db is the transacted one
+  (let [conn (fresh-conn)]
+    (define! conn "n" :person/name :db.type/string)
+    (define! conn "a" :person/age :db.type/long)
+    (let [age-eid (api/entid (api/db conn) :person/age)]
+      (api/transact conn [[:db/retract age-eid :db/ident :person/age]
+                          [:db/add age-eid :db/ident :person/age]])
+      (let [db (api/db conn)
+            rebuilt (time-travel/restore-db (api/db-storage db))]
+        (is (= db rebuilt))
+        (is (= age-eid (api/entid db :person/age)))
+        (is (= age-eid (api/entid rebuilt :person/age)))))))

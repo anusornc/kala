@@ -1,0 +1,7 @@
+# Schema prune: net state wins
+
+A transaction that retracts an entity's `:db/ident` datom and re-asserts an ident on the same entity in the same tx nets to the ident surviving — cardinality-one retraction followed by assertion leaves the datom present, and the registry follows the net datoms, not the op history. The registry prune (`prune-retracted-schema`) therefore drops entries only for idents the entity's slice no longer carries; register-new-entities has already re-derived whatever the net state justifies by the time the prune runs. This makes attributes and enums uniform (enums have pruned this way since #27) and matches Datomic's transactional semantics, where a tx's net datoms decide.
+
+Considered and rejected: pruning on op history (kills a same-tx re-definition even though the net state keeps the ident — the pre-ADR behavior, inconsistent with the enum branch); pruning before register (breaks the mid-pass registry reads that retractEntity depends on).
+
+Consequence: a same-tx ident rename also comes out correct as a consequence — the stale old-ident entries die, the re-derived new-ident entries survive. Note the prune keys on `:db/ident` retractions only (ADR-consistent with #24): retracting an attribute's `:db/valueType` while keeping its ident is a different transition the registry does not yet track — a same-tx attribute→enum downgrade (ident re-asserted, valueType retracted) likewise leaves the entity's attribute entries in place until a later ident retraction prunes them.

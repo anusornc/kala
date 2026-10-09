@@ -323,9 +323,9 @@
     db))
 
 ;; Schema is data on the way out too: a tx that retracts an entity's :db/ident
-;; datom kills what that entity registered — an attribute's full entries, or
-;; an ident-only entity's ::idents entry — so the registry entries die
-;; with it. Prune reads the same datom list register-new-entities does and runs
+;; datom kills the registry entries the entity's net datoms no longer justify —
+;; an attribute's entries, or an enum's ::idents entry (ADR-0003).
+;; Prune reads the same datom list register-new-entities does and runs
 ;; AFTER the datom pass — retract-entity resolves ref/component attributes
 ;; through the registry mid-pass, so the registry must stay intact until every
 ;; op has applied. Keying on the ident datom (rather than "entity gone") keeps
@@ -335,31 +335,36 @@
 ;; only the registry is pruned. Public for kala.time-travel.
 (defn prune-retracted-schema [db datoms]
   (if-some [ident-aid (get (::core/idents db) :db/ident)]
-    (let [dead (into #{}
+    (let [retracted (into #{}
                      (comp (filter (fn [^Datom d]
                                      (and (not (.added d)) (= ident-aid (.a d)))))
                            (map (fn [^Datom d] (.e d))))
                      datoms)]
       (reduce (fn [db e]
-                (if-some [attr (get (::core/schema-by-id db) e)]
-                  (-> db
-                      (update ::core/schema-by-id dissoc e)
-                      (update ::core/schema-by-ident dissoc (:ident attr))
-                      (update ::core/idents dissoc (:ident attr)))
-                  ;; Ident-only entity (an enum): it holds no attribute
-                  ;; entries, just the ::idents one. Drop the entries pointing
-                  ;; at it unless the entity's slice still carries that ident
-                  ;; — a same-tx re-assertion or move was already re-derived
-                  ;; by register-new-entities, keyed on the surviving ident.
-                  (let [current-ident (when-some [^Datom d (current-datom-any-v db e ident-aid)]
-                                        (.v d))]
+                ;; ADR-0003: net state wins. Register-new-entities has already
+                ;; re-derived whatever the surviving ident datom justifies, so
+                ;; the prune drops only entries the entity's slice no longer
+                ;; carries: an entity keeps exactly its current ident's
+                ;; entries — a same-tx re-assertion survives and a rename
+                ;; leaves no stale key.
+                (let [current-ident (when-some [^Datom d (current-datom-any-v db e ident-aid)]
+                                      (.v d))]
+                  (as-> db db
                     (update db ::core/idents
                             (fn [m]
                               (into {} (remove (fn [[ident holder]]
                                                  (and (= holder e) (not= ident current-ident))))
-                                     m))))))
+                                     m)))
+                    (update db ::core/schema-by-ident
+                            (fn [m]
+                              (into {} (remove (fn [[ident attr]]
+                                                 (and (= (:id attr) e) (not= ident current-ident))))
+                                     m)))
+                    (if (nil? current-ident)
+                      (update db ::core/schema-by-id dissoc e)
+                      db))))
               db
-              dead))
+              retracted))
     db))
 
 (defn transact-report

@@ -188,6 +188,44 @@
           (is (= (get tempids "z") (api/entid (api/db conn) :t/red)))
           (is (not= red (api/entid (api/db conn) :t/red))))))))
 
+(deftest same-tx-attribute-redefinition-follows-net-state
+  ;; ADR-0003: the prune drops what the net datoms no longer justify — a
+  ;; retract + re-assert of the ident in one tx keeps the attribute, a rename
+  ;; leaves only the new ident resolvable, with no stale entries either way
+  (let [conn (fresh-conn)]
+    (define! conn "n" :t/name :db.type/string)
+    (define! conn "a" :t/age :db.type/long)
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "p" :t/name "Alice"]
+                                                [:db/add "p" :t/age 30]])
+          p (get tempids "p")
+          age-eid (api/entid (api/db conn) :t/age)]
+      (testing "retract and re-assert the ident: the attribute survives"
+        (api/transact conn [[:db/retract age-eid :db/ident :t/age]
+                            [:db/add age-eid :db/ident :t/age]])
+        (let [db (api/db conn)]
+          (is (= age-eid (api/entid db :t/age)))
+          (is (= [30] (mapv :v (api/datoms db :aevt [(api/entid db :t/age)]))))
+          (api/transact conn [[:db/add "q" :t/age 31]])
+          (is (= [30 31] (mapv :v (api/datoms (api/db conn) :aevt [age-eid]))))))
+      (testing "retract here, define elsewhere: the new entity owns the ident"
+        (let [{:keys [tempids]} (api/transact conn [[:db/retract age-eid :db/ident :t/age]
+                                                    [:db/add "z" :db/ident :t/age]])]
+          (is (= (get tempids "z") (api/entid (api/db conn) :t/age)))
+          (is (not= age-eid (api/entid (api/db conn) :t/age)))))
+      (testing "rename on the same entity: old ident dies, new ident resolves"
+        (define! conn "w" :t/weight :db.type/long)
+        (api/transact conn [[:db/add "p" :t/weight 80]])
+        (let [wt-eid (api/entid (api/db conn) :t/weight)]
+          (api/transact conn [[:db/retract wt-eid :db/ident :t/weight]
+                              [:db/add wt-eid :db/ident :t/mass]])
+          (let [db (api/db conn)]
+            (is (nil? (api/entid db :t/weight)))
+            (is (= wt-eid (api/entid db :t/mass)))
+            ;; the data survives under the renamed attribute
+            (is (= [80] (mapv :v (api/datoms db :aevt [(api/entid db :t/mass)]))))
+            (assert-error :transact/unknown-attribute
+                          (api/transact conn [[:db/add "r" :t/weight 32]]))))))))
+
 ;; ---- cardinality ------------------------------------------------------------
 
 (deftest cardinality-many-duplicate-add-is-a-noop
