@@ -4,6 +4,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
             [kala.core :as core]
+            [kala.eid :as eid]
             [kala.storage.memory :as memory]
             [kala.test-util :refer [fresh-conn]]))
 
@@ -41,7 +42,7 @@
       (is (pos? (api/entid db :db.unique/identity))))
     (testing "entity ids use the partition/block/index long layout"
       (is (pos? ident-eid))
-      (is (= 0 (core/eid->partition ident-eid))))))
+      (is (eid/bootstrap-eid? ident-eid)))))
 
 (deftest entid-of-unknown-ident-is-nil
   (is (nil? (api/entid (api/db (fresh-conn)) :nope/never))))
@@ -55,7 +56,7 @@
           eid (get tempids "e1")]
       (testing "tempid resolved to a fresh user-partition entity"
         (is (pos? eid))
-        (is (= 1 (core/eid->partition eid))))
+        (is (eid/user-eid? eid)))
       (testing "the report exposes the tx entity"
         (is (pos? (get tempids :db/current-tx)))
         (is (every? #(= (get tempids :db/current-tx) (:tx %)) tx-data)))

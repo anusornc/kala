@@ -3,8 +3,9 @@
   {peer, client} x {memory, file} — which is what enforces access-mode and
   storage-backend parity end to end. Client-mode runs skip ^:peer
   namespaces (entity navigation and storage introspection are peer-only).
-  Backend-specific suites (the client's own coverage, recovery, the
-  per-adapter storage seams, the transactor) run once, outside the matrix."
+  Suites that run once, outside the matrix — the client's own coverage,
+  recovery, the per-adapter storage seams, the transactor, and the
+  pure-arithmetic unit suite (kala.eid-test) — are listed below."
   (:require [clojure.test :as t]
 
             [kala.api-test]
@@ -16,6 +17,7 @@
             [kala.time-travel-test]
 
             [kala.client-test]
+            [kala.eid-test]
             [kala.file-recovery-test]
             [kala.transactor-test]
             [kala.wire-test]
@@ -34,8 +36,9 @@
 (def ^:private peer-only? (into {} (map (fn [s] [s (boolean (:peer (meta (find-ns s))))])
                                         behavioral-ns-symbols)))
 
-(def ^:private backend-specific-ns-symbols
+(def ^:private once-ns-symbols
   ['kala.client-test
+   'kala.eid-test
    'kala.file-recovery-test
    'kala.transactor-test
    'kala.wire-test
@@ -87,6 +90,6 @@
                         (mapv (fn [ns-sym]
                                 (println "\n=== backend:" ns-sym "===")
                                 (run-counting #(t/run-tests ns-sym)))
-                              backend-specific-ns-symbols))]
+                              once-ns-symbols))]
     (println (str "\nmatrix total: " (+ mf bf) " failures, " (+ me be) " errors"))
     (System/exit (if (zero? (+ mf bf me be)) 0 1))))

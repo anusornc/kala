@@ -9,6 +9,7 @@
   core's index-specs table and slice primitive; nothing index-shaped is
   re-implemented here."
   (:require [kala.core :as core]
+            [kala.eid :as eid]
             [kala.storage :as storage])
   (:import [kala.core Datom]))
 
@@ -379,14 +380,14 @@
   (when-not (and (vector? tx-data) (every? #(or (vector? %) (map? %)) tx-data))
     (core/err :transact/bad-op "Transaction data must be a vector of operations or entity maps" {:tx-data tx-data}))
   (let [t (inc (::core/t db-before))
-        tx (core/tx-eid t)
+        tx (eid/tx-eid t)
         temps (volatile! {tx-tempid tx})
         upsert-claimants (volatile! {})
         ensure-temp (fn [db tempid]
                       (if-some [e (get @temps tempid)]
                         [db e]
                         (let [n (get (::core/next-idx db) 1 0)
-                              e (core/eid 1 (quot n 1024) (rem n 1024))]
+                              e (eid/alloc-user-eid n)]
                           (vswap! temps assoc tempid e)
                           [(assoc-in db [::core/next-idx 1] (inc n)) e])))
         txn {:tx tx

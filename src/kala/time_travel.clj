@@ -4,24 +4,17 @@
   entry through the transaction pipeline's index and schema primitives, so
   a rebuilt db value equals the live one."
   (:require [kala.core :as core]
+            [kala.eid :as eid]
             [kala.storage :as storage]
             [kala.tx :as tx])
   (:import [kala.core Datom]))
-
-;; tx entity ids pack t into the low 42 bits (partition 2)
-(def ^:private t-bits-mask 0x3FFFFFFFFFF)
-
-(defn eid->t
-  "Extract the transaction counter from a tx entity id."
-  [e]
-  (bit-and e t-bits-mask))
 
 (defn- normalize-t [x]
   (cond
     (not (int? x))
     (core/err :db/bad-t "t must be a counter or a tx entity id" {:t x})
-    (= 2 (core/eid->partition x)) (eid->t x)
-    (= 1 (core/eid->partition x))
+    (eid/tx-eid? x) (eid/eid->t x)
+    (eid/user-eid? x)
     (core/err :db/bad-t "Expected t or a tx entity id, got a user entity id" {:e x})
     :else x))
 
@@ -32,16 +25,13 @@
 (defn- raw->datom [[e a v tx added]]
   (core/->Datom e a v tx (boolean (= added true))))
 
-;; Allocation index (block*1024 + idx) of a user-partition entity id, for
-;; rebuilding ::core/next-idx during replay.
-(defn- user-alloc-idx [x]
-  (when (and (int? x) (pos? x) (= 1 (core/eid->partition x)))
-    (inc (+ (* (bit-and (bit-shift-right x 10) 0x3FF) 1024)
-            (bit-and x 0x3FF)))))
-
+;; Restore the user allocation counter by taking the max over every datom's
+;; entity slot: an allocated eid always appears in the e-slot of the entry
+;; that created it, so a whole-log max cannot miss one. kala.eid's
+;; user-alloc-index is the packing's own inverse; value slots are skipped.
 (defn- restore-next-idx [db datoms]
-  (if-some [n (transduce (comp (mapcat (fn [^Datom d] [(.e d) (.v d)]))
-                               (keep user-alloc-idx))
+  (if-some [n (transduce (comp (map (fn [^Datom d] (.e d)))
+                               (keep eid/user-alloc-index))
                          max 0 datoms)]
     (assoc-in db [::core/next-idx 1] (max n (get-in db [::core/next-idx 1] 0)))
     db))
@@ -119,10 +109,11 @@
     (-> (reduce (fn [db index]
                   (let [{:keys [set cmp]} (core/index-specs index)]
                     (assoc db set
-                           ;; datoms carry tx entity ids; tx-eid(t) is
-                           ;; monotonic in t, so compare in eid space
+                           ;; datoms carry tx entity ids; tx-eid is
+                           ;; monotonic in t (see kala.eid/tx-eid), so
+                           ;; the packed longs compare directly
                            (into (sorted-set-by cmp)
-                                 (filter (fn [^Datom d] (> (.tx d) (core/tx-eid t)))
+                                 (filter (fn [^Datom d] (> (.tx d) (eid/tx-eid t)))
                                          (get db set))))))
                 db
                 (keys core/index-specs))

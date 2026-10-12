@@ -26,6 +26,10 @@ _Avoid_: internal datom, attr-id datom
 The transaction counter. Every transaction takes the next t; time-travel reads are addressed by t or a transaction entity id.
 _Avoid_: timestamp, tx number
 
+**partition**:
+The entity-id space an id belongs to: bootstrap (schema entities and their enums), user (transacted entities), or tx (transaction entities). Every entity id packs its partition with its allocation position into one positive long; kala.eid owns that packing.
+_Avoid_: eid space, id prefix
+
 **transaction entity**:
 The entity created for each transaction, carrying :db/txInstant.
 _Avoid_: tx metadata, epoch

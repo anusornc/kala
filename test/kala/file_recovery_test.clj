@@ -4,9 +4,9 @@
   nor double-applies transactions."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
+            [kala.eid :as eid]
             [kala.storage :as storage]
-            [kala.test-util :refer [define!]]
-            [kala.time-travel :as time-travel]))
+            [kala.test-util :refer [define!]]))
 
 (defn- tmp-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -48,18 +48,25 @@
                          (mapv :v (api/datoms db-reopened :eavt [alice aid])))
                        [name-aid age-aid]))))
 
-        ;; the restored database continues writing where the log left off
-        (let [conn2 (api/connect {:storage :file :path db-dir})
-              {:keys [tx-data]} (api/transact conn2 [[:db/add "bob" :person/name "Bob"]])]
-          (testing "t continues monotonically after restart"
-            (is (pos? (count tx-data)))
-            (is (> (api/db-t (api/db conn2)) t-before)))
-          (testing "both processes' data coexist"
-            (is (= 2 (count (api/q '[:find ?p :where [?p :person/name _]]
-                                    (api/db conn2))))))
-          (testing "time travel works against restored storage"
-            (let [db-now (api/db conn2)
-                  first-t (time-travel/eid->t (:tx (first (api/datoms db-now :eavt [alice name-aid]))))]
-              (is (= ["Alice"]
-                     (mapv :v (api/datoms (api/as-of db-now first-t)
-                                          :eavt [alice name-aid])))))))))))
+          ;; the restored database continues writing where the log left off
+          (let [conn2 (api/connect {:storage :file :path db-dir})
+                {:keys [tempids tx-data]} (api/transact conn2 [[:db/add "bob" :person/name "Bob"]])
+                bob (get tempids "bob")]
+            (testing "t continues monotonically after restart"
+              (is (pos? (count tx-data)))
+              (is (> (api/db-t (api/db conn2)) t-before)))
+            (testing "the restored allocation counter continues without collision"
+              (is (eid/user-eid? bob))
+              (is (not= bob alice))
+              (is (= ["Bob"]
+                     (mapv :v (api/datoms (api/db conn2) :eavt [bob :person/name])))
+                  "the fresh eid resolves to Bob's facts only, nothing stale"))
+            (testing "both processes' data coexist"
+              (is (= 2 (count (api/q '[:find ?p :where [?p :person/name _]]
+                                      (api/db conn2))))))
+            (testing "time travel works against restored storage"
+              (let [db-now (api/db conn2)
+                    first-t (eid/eid->t (:tx (first (api/datoms db-now :eavt [alice name-aid]))))]
+                (is (= ["Alice"]
+                       (mapv :v (api/datoms (api/as-of db-now first-t)
+                                            :eavt [alice name-aid])))))))))))

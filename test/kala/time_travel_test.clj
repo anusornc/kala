@@ -3,6 +3,7 @@
   retraction status, and speculative with()."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
+            [kala.eid :as eid]
             [kala.storage :as storage]
             [kala.storage.memory :as memory]
             [kala.test-util :refer [assert-error define! fresh-conn]]
@@ -117,7 +118,7 @@
 
 (deftest since-accepts-raw-t-counters
   (let [{:keys [conn tx2 tx3]} (load-fixture!)
-        t2 (time-travel/eid->t tx2)
+        t2 (eid/eid->t tx2)
         db-since (api/since (api/db conn) t2)]
     (testing "raw t counter normalizes to the same view as the tx eid"
       (is (= (api/since (api/db conn) tx2) db-since)))

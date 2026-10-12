@@ -1,11 +1,14 @@
 (ns kala.core
-  "Datom representation, entity-id allocation, the bootstrap schema, index
-  construction, and the read interfaces over immutable db values. The
-  transaction pipeline lives in kala.tx; time travel and log replay in
-  kala.time-travel. No I/O here: storage sits behind the Storage protocol
-  (seam 2). Reads go through immutable db values — plain maps keyed
-  :kala.core/*, which every kala module shares."
+  "Datom representation, the bootstrap schema, index construction, and the
+  read interfaces over immutable db values. Entity-id packing lives in
+  kala.eid — a pure-arithmetic leaf this namespace places bootstrap schema
+  entities through; the allocation counter is db-value state kala.tx
+  advances. The transaction pipeline lives in kala.tx; time travel and log
+  replay in kala.time-travel. No I/O here: storage sits behind the Storage
+  protocol (seam 2). Reads go through immutable db values — plain maps
+  keyed :kala.core/*, which every kala module shares."
   (:require [clojure.string :as str]
+            [kala.eid :as eid]
             [kala.storage :as storage]))
 
 ;; ---- errors -----------------------------------------------------------------
@@ -15,26 +18,6 @@
   carries :kala/error. The error contract is part of the public interface."
   [kind msg data]
   (throw (ex-info msg (merge {:kala/error kind} data))))
-
-;; ---- entity ids: partition / block / index packed into a positive long ------
-
-(def ^:const ^:private partition-bits 42)
-
-(def partitions
-  {:db.part/db 0
-   :db.part/user 1
-   :db.part/tx 2})
-
-(defn eid [partition block idx]
-  (bit-or (bit-shift-left partition partition-bits)
-          (bit-shift-left block 10)
-          idx))
-
-(defn eid->partition [e]
-  (bit-shift-right e partition-bits))
-
-(defn tx-eid [t]
-  (eid (:db.part/tx partitions) 0 t))
 
 ;; ---- datoms -----------------------------------------------------------------
 
@@ -137,13 +120,13 @@
    :db/unique 5 :db/isComponent 6 :db/txInstant 7})
 
 (defn- enum-eids []
-  (into {} (map-indexed (fn [j k] [k (eid 0 0 (+ 100 j))]) enum-idents)))
+  (into {} (map-indexed (fn [j k] [k (eid/bootstrap-eid (+ 100 j))]) enum-idents)))
 
 (defn attr-eid
   "The deterministic entity id of a bootstrap schema attribute. Public for
   kala.tx, which stamps :db/txInstant on every transaction entity."
   [ident]
-  (eid 0 0 (attr-pos ident)))
+  (eid/bootstrap-eid (attr-pos ident)))
 
 (defn- bootstrap-tuples []
   (let [enums (enum-eids)
@@ -160,7 +143,7 @@
         enum-tuples (map (fn [k] [:db/add (get enums k) :db/ident k]) enum-idents)
         ;; the genesis transaction is itself a transaction entity, stamped
         ;; deterministically so a rebuilt db (TT8 recovery) matches
-        genesis-meta [[:db/add (tx-eid bootstrap-t) :db/txInstant (java.util.Date. 0)]]]
+        genesis-meta [[:db/add (eid/tx-eid bootstrap-t) :db/txInstant (java.util.Date. 0)]]]
     (into attr-tuples (into enum-tuples genesis-meta))))
 
 (defn- attr-map [{:db/keys [ident valueType cardinality unique isComponent]} id]
@@ -170,8 +153,6 @@
    :cardinality (or cardinality :db.cardinality/one)
    :unique unique
    :component? (boolean isComponent)})
-
-(def ^:private next-part-0-idx (+ 100 (count enum-idents)))
 
 ;; ---- db values ---------------------------------------------------------------
 
@@ -196,8 +177,7 @@
     (merge index-sets
            {::storage storage
             ::t bootstrap-t
-            ::next-idx {0 next-part-0-idx
-                        1 0}
+            ::next-idx {1 0}
             ::idents (merge (into {} (map (fn [spec] [(:db/ident spec) (attr-eid (:db/ident spec))]) meta-attrs))
                             (enum-eids))
             ::schema-by-ident schema-by-ident
