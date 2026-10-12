@@ -222,8 +222,7 @@
 
 (defn lookup-attr
   "An attribute's schema map by ident or by attr id, or nil. Public for
-  kala.tx's op resolution and map-form expansion, and for kala.entity /
-  kala.pull, which shape raw bridge datoms by attr id."
+  kala.tx's op resolution and map-form expansion."
   [db ident-or-id]
   (or (get (::schema-by-ident db) ident-or-id)
       (get (::schema-by-id db) ident-or-id)))
@@ -358,25 +357,59 @@
 (defn many-attr? [attr]
   (= :db.cardinality/many (:cardinality attr)))
 
-(defn attr-ident
+(defn resolve-entid
+  "The :e-slot rule resolve-components applies: a keyword resolves through
+  entid (nil when unresolvable), everything else is already an entity id.
+  Public for kala.entity and kala.pull, whose entry points accept the same
+  reference forms."
+  [db x]
+  (if (keyword? x) (entid db x) x))
+
+(defn- attr-ident
   "An attr id's ident, or the raw id when no schema entry exists — the same
-  fallback public-datom applies. Public for kala.entity and kala.pull,
-  which key touch and wildcard output by ident."
+  fallback public-datom applies."
   [db a-id]
   (or (:ident (get (::schema-by-id db) a-id)) a-id))
 
-(defn ref-entid
+(defn- ref-entid
   "Resolution for a ref slot's value: keywords must resolve to an entity id
   (:transact/unknown-ident otherwise); everything else passes through. On
-  VAET the sought entity rides the ref-typed :v slot, so kala.entity and
-  kala.pull resolve reverse-read eids through this rule — the same one
-  resolve-components applies. Public for kala.entity and kala.pull."
+  VAET the sought entity rides the ref-typed :v slot, so referrers keys
+  reverse reads through this rule — the same one resolve-components
+  applies."
   [db a-id v]
   (let [a (get (::schema-by-id db) a-id)]
     (if (and (keyword? v) a (= :db.type/ref (:value-type a)))
       (or (entid db v)
           (err :transact/unknown-ident "No entity with ident" {:ident v}))
       v)))
+
+(defn referrers
+  "Entity ids that reference e through attr — the VAET read keyed by
+  ref-entid. Public for kala.entity and kala.pull, whose reverse reads are
+  this one shape."
+  [db attr e]
+  (mapv :e (index-slice db :vaet [(ref-entid db (:id attr) e) (:id attr)])))
+
+(defn materialize
+  "An entity's datoms as a plain map keyed by attribute ident (the raw attr
+  id when no schema entry exists), :db/id kept as the argument's original
+  reference. Cardinality-many attributes collect into vectors. The optional
+  value-fn transforms each (attr value) before it lands — kala.entity's
+  touch expands components through it. Public for kala.entity and
+  kala.pull, whose touch and wildcard reads are this one shape."
+  ([db e]
+   (materialize db e (fn [_attr v] v)))
+  ([db e value-fn]
+   (reduce (fn [m ^Datom d]
+             (let [attr (lookup-attr db (.a d))
+                   a (or (:ident attr) (.a d))
+                   v (value-fn attr (.v d))]
+               (if (many-attr? attr)
+                 (update m a (fnil conj []) v)
+                 (assoc m a v))))
+           {:db/id e}
+           (index-slice db :eavt [(resolve-entid db e)]))))
 
 (defn public-datom
   "The public shape of a datom: attribute resolved to its ident. Public for
@@ -398,7 +431,7 @@
         a-res (fn [x]
                 (:id (or (lookup-attr db x)
                          (err :transact/unknown-attribute "Unknown attribute" {:attribute x}))))
-        e-res (fn [x] (if (keyword? x) (entid db x) x))
+        e-res (fn [x] (resolve-entid db x))
         v-res (partial ref-entid db)
         ;; resolve :a and :e slots first (:v needs the :a slot's attr id)
         pass1 (reduce (fn [acc i]

@@ -152,8 +152,8 @@
   (let [conn (load-fixture!)
         {:keys [bob]} (fixture-ids (api/db conn))]
     ;; pinned: on VAET the sought entity rides the ref-typed :v slot, so the
-    ;; keyword must resolve (core/ref-entid — the rule resolve-components
-    ;; applies); pull never reaches this rule, its entry check NPEs first
+    ;; keyword must resolve (the :e-slot rule resolve-components applies);
+    ;; pull never reaches this rule, its entry check NPEs first
     (try (:person/_friend (api/entity (api/db conn) :nope/unknown))
          (is false "expected ex-info")
          (catch clojure.lang.ExceptionInfo e
