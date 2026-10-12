@@ -3,8 +3,8 @@
   retraction status, and speculative with()."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
-            [kala.core :as core]
             [kala.storage :as storage]
+            [kala.storage.memory :as memory]
             [kala.test-util :refer [assert-error define! fresh-conn]]
             [kala.time-travel :as time-travel]))
 
@@ -164,23 +164,36 @@
     [scans spy]))
 
 (deftest as-of-and-history-do-not-rescan-storage-at-a-repeated-t
-  (let [{:keys [conn tx2 tx3]} (load-fixture!)
-        db (api/db conn)
-        [scans spy] (counting-storage (api/db-storage db))
-        db* (assoc db ::core/storage spy)]
-    (testing "repeat as-of at the same t replays once"
-      (let [db-at-t2 (api/as-of db* tx2)]
-        (is (= 1 @scans) "the first as-of scans the log once")
-        (is (= db-at-t2 (api/as-of db* tx2)) "the second as-of is equal")
-        (is (= 1 @scans) "the second as-of does not re-scan")
-        (testing "a different t scans again"
-          (is (some? (api/as-of db* tx3)))
-          (is (= 2 @scans)))))
-    (testing "repeat history at the same t replays once"
-      (let [hist (api/history db*)]
-        (is (= 3 @scans) "one scan for history after the two as-ofs")
-        (is (= hist (api/history db*)))
-        (is (= 3 @scans) "the second history does not re-scan")))))
+  ;; the counting adapter rides connect's front door — the storage seam the
+  ;; replay cache sits behind
+  (let [[scans spy] (counting-storage (memory/empty-storage))
+        conn (api/connect {:storage spy})]
+    (define! conn "n" :person/name :db.type/string)
+    (define! conn "a" :person/age :db.type/long)
+    (let [r1 (api/transact conn [[:db/add "alice" :person/name "Alice"]
+                                 [:db/add "alice" :person/age 30]])
+          r2 (api/transact conn [[:db/add "bob" :person/name "Bob"]
+                                 [:db/add "bob" :person/age 25]])
+          alice (get (:tempids r1) "alice")
+          tx2 (get (:tempids r1) :db/current-tx)
+          tx3 (get (:tempids r2) :db/current-tx)
+          ;; the current t must move past tx3, or as-of tx3 is the identity
+          ;; fast path and never touches the log
+          _ (api/transact conn [[:db/retract alice :person/age 30]])
+          _ (reset! scans 0)]
+      (testing "repeat as-of at the same t replays once"
+        (let [db-at-t2 (api/as-of (api/db conn) tx2)]
+          (is (= 1 @scans) "the first as-of scans the log once")
+          (is (= db-at-t2 (api/as-of (api/db conn) tx2)) "the second as-of is equal")
+          (is (= 1 @scans) "the second as-of does not re-scan")
+          (testing "a different t scans again"
+            (is (some? (api/as-of (api/db conn) tx3)))
+            (is (= 2 @scans)))))
+      (testing "repeat history at the same t replays once"
+        (let [hist (api/history (api/db conn))]
+          (is (= 3 @scans) "one scan for history after the two as-ofs")
+          (is (= hist (api/history (api/db conn))))
+          (is (= 3 @scans) "the second history does not re-scan"))))))
 
 (deftest rebuild-applies-retractions
   ;; the fixture's tx6 retracts Alice's age — a rebuilt db must apply that

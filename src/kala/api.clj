@@ -13,6 +13,7 @@
             [kala.entity :as entity]
             [kala.pull :as pull]
             [kala.query :as query]
+            [kala.storage :as storage]
             [kala.storage.file :as file]
             [kala.storage.memory :as memory]
             [kala.time-travel :as time-travel]
@@ -30,20 +31,25 @@
 
      (connect {:storage :memory :name \"dev\"})
      (connect {:storage :file :path \"/var/data/mydb\"})
+     (connect {:storage my-adapter})   ; any Storage adapter
 
-  Opening existing storage rebuilds the db from the log — crash recovery is
-  part of connect. For remote access, connect through
-  kala.client/connect and use these same operations."
+  The keyword forms name the built-in storage backends; a value satisfying
+  the Storage protocol is wired in directly, making the storage seam
+  exercisable through the front door. Opening existing storage rebuilds the
+  db from the log — crash recovery is part of connect. For remote access,
+  connect through kala.client/connect and use these same operations."
   [{:keys [storage path name] :or {storage :memory name "db"}}]
-  (let [s (case storage
-            :memory (memory/empty-storage)
-            :file (do (when-not path
-                        (throw (ex-info "File storage requires :path"
-                                        {:kala/error :connect/missing-path})))
-                      (file/open-storage path))
-            (throw (ex-info "Unknown storage backend"
-                            {:kala/error :connect/unknown-storage
-                             :storage storage})))]
+  (let [s (cond
+            (satisfies? storage/Storage storage) storage
+            :else (case storage
+                    :memory (memory/empty-storage)
+                    :file (do (when-not path
+                                (throw (ex-info "File storage requires :path"
+                                                {:kala/error :connect/missing-path})))
+                              (file/open-storage path))
+                    (throw (ex-info "Unknown storage backend"
+                                    {:kala/error :connect/unknown-storage
+                                     :storage storage}))))]
     (atom (time-travel/restore-db s))))
 
 (defn db

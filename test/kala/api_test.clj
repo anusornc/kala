@@ -4,6 +4,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
             [kala.core :as core]
+            [kala.storage.memory :as memory]
             [kala.test-util :refer [fresh-conn]]))
 
 (defn install-person-schema! [conn]
@@ -198,3 +199,21 @@
        (is false "expected ex-info")
        (catch clojure.lang.ExceptionInfo e
          (is (= :datoms/unknown-index (:kala/error (ex-data e)))))))
+
+(deftest connect-accepts-a-storage-adapter
+  ;; the Storage protocol is the declared pluggable seam: an adapter satisfies
+  ;; it at the connect seam; the keywords stay as the built-in adapters
+  (let [s (memory/empty-storage)
+        conn (api/connect {:storage s :name "adapter"})]
+    (testing "the adapter is wired in as-is, not re-wrapped"
+      (is (identical? s (core/db-storage (api/db conn)))))
+    (api/transact conn [[:db/add "n" :db/ident :person/name]
+                        [:db/add "n" :db/valueType :db.type/string]])
+    (api/transact conn [[:db/add "a" :person/name "Alice"]])
+    (testing "the connection reads and writes through the adapter"
+      (is (= ["Alice"] (mapv :v (api/datoms (api/db conn)
+                                            :aevt [(api/entid (api/db conn) :person/name)])))))
+    (testing "reopening the same adapter replays its log"
+      (let [conn2 (api/connect {:storage s :name "adapter"})]
+        (is (= ["Alice"] (mapv :v (api/datoms (api/db conn2)
+                                              :aevt [(api/entid (api/db conn2) :person/name)]))))))))

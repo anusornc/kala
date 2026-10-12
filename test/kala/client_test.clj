@@ -188,7 +188,7 @@
    :connect/unknown-storage "peer-side connect error — same"
    :client/peer-only "client-boundary error — the peer runs these ops in-process and never raises it"
    :client/error "fallback kind for a reply frame without :error; the transactor's fail frames always carry one"
-   :storage/non-monotonic-t "raised by the storage append both modes share — asserted at the storage seam below"
+   :storage/non-monotonic-t "peer mode triggers it through the public path below (a lying adapter); client mode cannot carry an adapter — the transactor config is EDN keywords"
    :storage/rename-failed "needs filesystem fault injection between temp write and rename; keys enumerated for the reply path"})
 
 (def raw-frame-kinds
@@ -286,6 +286,23 @@
     (let [ms (memory/empty-storage)]
       (storage/append-log ms {:t 5 :datoms []})
       (let [ex (try (storage/append-log ms {:t 3 :datoms []}) nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :storage/non-monotonic-t (:kala/error (ex-data ex))))
+        (is (= [:last-t :t] (sort (disj (into #{} (keys (ex-data ex))) :kala/error)))))))
+  (testing "the non-monotonic guard raises through the public path with a lying adapter"
+    ;; an adapter whose log-scan hides its high last-t: the rebuilt conn
+    ;; replays a low t, so its first append violates the backend's guard
+    (let [inner (memory/empty-storage)]
+      (storage/append-log inner {:t 100 :datoms []})
+      (let [lying (reify storage/Storage
+                    (put-segment [_ id data] (storage/put-segment inner id data))
+                    (get-segment [_ id] (storage/get-segment inner id))
+                    (list-segments [_] (storage/list-segments inner))
+                    (append-log [_ entry] (storage/append-log inner entry))
+                    (log-scan [_ from-t to-t]
+                      (filter #(< (:t %) 100) (storage/log-scan inner from-t to-t))))
+            conn (api/connect {:storage lying :name "stale"})
+            ex (try (api/transact conn [[:db/add "x" :db/ident :t/x]]) nil
                     (catch clojure.lang.ExceptionInfo e e))]
         (is (= :storage/non-monotonic-t (:kala/error (ex-data ex))))
         (is (= [:last-t :t] (sort (disj (into #{} (keys (ex-data ex))) :kala/error)))))))
