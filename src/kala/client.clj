@@ -8,7 +8,8 @@
   t; as-of/since/history derive further markers; transact reports carry
   :db-before/:db-after markers at the surrounding ts. Entity navigation is
   a peer-only feature and is rejected explicitly in client mode."
-  (:require [kala.wire :as wire])
+  (:require [kala.core :as core]
+            [kala.wire :as wire])
   (:import [java.io BufferedInputStream BufferedOutputStream]
            [java.net Socket]))
 
@@ -45,9 +46,9 @@
 (defn- check [reply]
   (if (= :ok (:status reply))
     reply
-    (throw (ex-info (or (:message reply) "Client request failed")
-                    (merge {:kala/error (or (:error reply) :client/error)}
-                           (dissoc reply :status :error :message))))))
+    (core/err (or (:error reply) :client/error)
+              (or (:message reply) "Client request failed")
+              (dissoc reply :status :error :message))))
 
 (defn connect
   "Connect to a running transactor: {:host \"127.0.0.1\" :port 4334 :name \"db\"}.
@@ -64,9 +65,9 @@
         (let [reply (wire/read-msg (:in c))]
           (when (not= :ok (:status reply))
             (.close sock)
-            (throw (ex-info (or (:message reply) "Protocol handshake failed")
-                            {:kala/error (or (:error reply) :client/error)
-                             :reply reply})))))
+            (core/err (or (:error reply) :client/error)
+                      (or (:message reply) "Protocol handshake failed")
+                      {:reply reply}))))
       (catch Exception e
         (.close sock)
         (throw e)))

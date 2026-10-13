@@ -44,12 +44,9 @@
             :else (case storage
                     :memory (memory/empty-storage)
                     :file (do (when-not path
-                                (throw (ex-info "File storage requires :path"
-                                                {:kala/error :connect/missing-path})))
+                                (core/err :connect/missing-path "File storage requires :path" {}))
                               (file/open-storage path))
-                    (throw (ex-info "Unknown storage backend"
-                                    {:kala/error :connect/unknown-storage
-                                     :storage storage}))))]
+                    (core/err :connect/unknown-storage "Unknown storage backend" {:storage storage})))]
     (atom (time-travel/restore-db s))))
 
 (defn db
@@ -92,8 +89,7 @@
   reverse refs via :ns/_attr. Ref attributes return entities."
   [db eid]
   (when (remote-db? db)
-    (throw (ex-info "Entity navigation is peer-only; use pull in client mode"
-                    {:kala/error :client/peer-only :op :entity})))
+    (core/err :client/peer-only "Entity navigation is peer-only; use pull in client mode" {:op :entity}))
   (entity/entity db eid))
 
 (defn touch
@@ -115,8 +111,7 @@
   for paging scans (peer mode only)."
   [db index components]
   (when (remote-db? db)
-    (throw (ex-info "seek-datoms is peer-only in v1"
-                    {:kala/error :client/peer-only :op :seek-datoms})))
+    (core/err :client/peer-only "seek-datoms is peer-only in v1" {:op :seek-datoms}))
   (core/seek-datoms db index components))
 
 (defn entid

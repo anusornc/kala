@@ -12,8 +12,6 @@
 
 (def ^:private unbound ::unbound)
 
-(defn- err [kind msg data]
-  (throw (ex-info msg (merge {:kala/error kind} data))))
 
 ;; ---- built-ins for predicates and function expressions ------------------------
 
@@ -36,7 +34,7 @@
 (defn- normalize-clause [c]
   (if (or (vector? c) (seq? c))
     c
-    (err :query/bad-clause "Where clauses must be vectors or lists" {:clause c})))
+    (core/err :query/bad-clause "Where clauses must be vectors or lists" {:clause c})))
 
 (defn- sections->query [sections]
   {:find (:find sections)
@@ -54,14 +52,14 @@
 ;; rules: [[(name ?a ?b) clause+]] keyed by [name arity]
 (defn- parse-rules [rules]
   (when-not (sequential? rules)
-    (err :query/bad-rules "Rules must be a sequence of rule definitions" {:rules rules}))
+    (core/err :query/bad-rules "Rules must be a sequence of rule definitions" {:rules rules}))
   (reduce (fn [acc rule]
             (when-not (and (vector? rule) (seq? (first rule)) (>= (count rule) 2))
-              (err :query/bad-rules
+              (core/err :query/bad-rules
                    "A rule is [[(name args...) clause+]]" {:rule rule}))
             (let [[rname & args] (first rule)]
               (when-not (symbol? rname)
-                (err :query/bad-rules "Rule head must start with a name" {:rule rule}))
+                (core/err :query/bad-rules "Rule head must start with a name" {:rule rule}))
               ;; store the full rule [(head) clause+] so solve-rule-body can
               ;; destructure head and clauses
               (update acc [rname (count args)] (fnil conj []) rule)))
@@ -86,7 +84,7 @@
   (let [key [(first call) (count (rest call))]
         tuples (get rule-sols key)]
     (when (nil? tuples)
-      (err :query/unknown-rule "No rule defined" {:rule (first call) :arity (count (rest call))}))
+      (core/err :query/unknown-rule "No rule defined" {:rule (first call) :arity (count (rest call))}))
     (keep #(unify-args (vec (rest call)) % bindings) tuples)))
 
 ;; ---- find specs ---------------------------------------------------------------
@@ -99,24 +97,24 @@
 (defn- parse-aggregate [expr]
   (let [[f & args] expr]
     (when-not (contains? aggregate-names f)
-      (err :query/unknown-aggregate "Unknown aggregate" {:aggregate f}))
+      (core/err :query/unknown-aggregate "Unknown aggregate" {:aggregate f}))
     (cond
       (and (contains? #{'rand 'sample} f) (= 1 (count args)))
-      (err :query/bad-aggregate "Aggregate requires a count argument" {:expr expr})
+      (core/err :query/bad-aggregate "Aggregate requires a count argument" {:expr expr})
       (and (contains? n-aggregates f) (= 2 (count args)))
       (let [[n v] args]
         (when-not (and (integer? n) (pos? n) (symbol? v))
-          (err :query/bad-aggregate "Expected (f n ?var)" {:expr expr}))
+          (core/err :query/bad-aggregate "Expected (f n ?var)" {:expr expr}))
         {:agg-fn f :n n :var v})
       (and (= 1 (count args)) (symbol? (first args)))
       {:agg-fn f :var (first args)}
-      :else (err :query/bad-aggregate "Unsupported aggregate expression" {:expr expr}))))
+      :else (core/err :query/bad-aggregate "Unsupported aggregate expression" {:expr expr}))))
 
 (defn- parse-find [find-elems]
   (let [[x & more] find-elems]
     (cond
       (or (nil? find-elems) (empty? find-elems))
-      (err :query/bad-find "Query needs :find" {})
+      (core/err :query/bad-find "Query needs :find" {})
 
       (every? symbol? find-elems)
       {:type :relation :vars find-elems}
@@ -126,7 +124,7 @@
         (= '... (last x))
         (if (symbol? (first x))
           {:type :coll :var (first x)}
-          (err :query/bad-find "Collection spec requires a variable" {:find find-elems}))
+          (core/err :query/bad-find "Collection spec requires a variable" {:find find-elems}))
 
         (and (= 1 (count x)) (symbol? (first x))) {:type :scalar :var (first x)}
         (and (= 2 (count x)) (symbol? (first x)) (= '. (second x)))
@@ -135,11 +133,11 @@
         (and (= 1 (count x)) (seq? (first x)))
         (let [expr (first x)]
           (when-not (and (= 2 (count expr)) (= (first expr) 'str) (symbol? (second expr)))
-            (err :query/bad-find
+            (core/err :query/bad-find
                  "Only single-variable (str ?x) expressions are supported" {:find find-elems}))
           {:type :string :expr expr})
 
-        :else (err :query/bad-find "Unsupported find specification" {:find find-elems}))
+        :else (core/err :query/bad-find "Unsupported find specification" {:find find-elems}))
 
       (and (some list? find-elems)
            (not-any? vector? find-elems)
@@ -149,7 +147,7 @@
                     (if (list? el)
                       (let [[_ var pattern] el]
                         (when-not (symbol? var)
-                          (err :query/bad-find "(pull ?var pattern) needs a variable" {:find find-elems}))
+                          (core/err :query/bad-find "(pull ?var pattern) needs a variable" {:find find-elems}))
                         {:pull var :pattern pattern})
                       el))
                   find-elems)}
@@ -159,10 +157,10 @@
       {:type :aggregate :els (mapv (fn [el] (if (list? el) (parse-aggregate el) el)) find-elems)}
 
       (some list? find-elems)
-      (err :query/bad-aggregate
+      (core/err :query/bad-aggregate
            "Aggregates require the relation find form" {:find find-elems})
 
-      :else (err :query/bad-find "Unsupported find specification" {:find find-elems}))))
+      :else (core/err :query/bad-find "Unsupported find specification" {:find find-elems}))))
 
 ;; ---- patterns ------------------------------------------------------------------
 
@@ -172,24 +170,24 @@
     (keyword? a)
     (let [ident (core/reverse-attr a)
           attr (or (core/attribute db ident)
-                   (err :query/unknown-attribute "Unknown attribute" {:attribute a}))]
+                   (core/err :query/unknown-attribute "Unknown attribute" {:attribute a}))]
       {:id (:id attr)
        :reverse (boolean (core/reverse-attr? a))
        :ref? (= :db.type/ref (:value-type attr))})
-    :else (err :query/bad-attribute
+    :else (core/err :query/bad-attribute
                "Attribute must be a keyword or _" {:attribute a})))
 
 (defn- pad3 [clause]
   (case (count clause)
     3 clause
     2 [(clause 0) (clause 1) '_]
-    (err :query/bad-clause "Patterns must have 2 or 3 elements" {:clause clause})))
+    (core/err :query/bad-clause "Patterns must have 2 or 3 elements" {:clause clause})))
 
 (defn- resolve-constant [db attr v]
   ;; keyword constants in ref position resolve to entity ids (error if unknown)
   (if (and v (keyword? v) (:ref? attr) (not (:any? attr)))
     (or (core/entid db v)
-        (err :query/unknown-ident "Unknown ident in value position" {:ident v}))
+        (core/err :query/unknown-ident "Unknown ident in value position" {:ident v}))
     v))
 
 (defn- prep-pattern [db clause]
@@ -259,11 +257,11 @@
 
 (defn- arg-value [x bindings clause]
   (cond
-    (= x '_) (err :query/bad-binding
+    (= x '_) (core/err :query/bad-binding
                   "Wildcard not allowed in expression arguments" {:clause clause})
     (symbol? x) (if (contains? bindings x)
                   (get bindings x)
-                  (err :query/unbound-var
+                  (core/err :query/unbound-var
                        "Argument not bound by an earlier clause" {:var x :clause clause}))
     :else x))
 
@@ -278,7 +276,7 @@
         (contains? bindings result-slot)
         (when (core/value-eq (get bindings result-slot) out) [bindings])
         :else [(assoc bindings result-slot out)])
-      :else (err :query/bad-binding
+      :else (core/err :query/bad-binding
                  "Expression result must bind a variable" {:slot result-slot :clause clause}))))
 
 ;; ---- evaluation --------------------------------------------------------------------
@@ -303,7 +301,7 @@
       ;; validate eagerly so :query/unknown-rule raises regardless of the
       ;; planned execution order
       (when-not (contains? rule-keys key)
-        (err :query/unknown-rule "No rule defined"
+        (core/err :query/unknown-rule "No rule defined"
              {:rule (first clause) :arity (count (rest clause))}))
       (fn [rule-sols bindings] (match-rule-call rule-sols clause bindings)))
 
@@ -311,14 +309,14 @@
     (let [[f-expr result-slot] clause
           [f & args] f-expr
           f' (or (get builtins f)
-                 (err :query/unknown-builtin "Unknown function" {:fn f :clause clause}))]
+                 (core/err :query/unknown-builtin "Unknown function" {:fn f :clause clause}))]
       (fn [_ bindings] (apply-fn-expr f' args result-slot clause bindings)))
 
     :pattern
     (let [prepped (prep-pattern db clause)]
       (fn [_ bindings] (match-pattern db prepped bindings)))
 
-    (err :query/bad-clause "Unsupported where clause" {:clause clause})))
+    (core/err :query/bad-clause "Unsupported where clause" {:clause clause})))
 
 (defn- run-matches [rule-sols matchers initial-solutions]
   (reduce (fn [solutions match]
@@ -421,7 +419,7 @@
            (mapv (fn [a]
                    (if (contains? b a)
                      (get b a)
-                     (err :query/bad-rules
+                     (core/err :query/bad-rules
                           "Rule head var not bound by the body" {:rule rule-name :var a})))
                  args))
          solutions)))
@@ -442,7 +440,7 @@
     (loop [sols (into {} (map (fn [k] [k #{}]) (keys rules)))
            fuel rule-fuel]
       (when (zero? fuel)
-        (err :query/rule-overflow
+        (core/err :query/rule-overflow
              "Rule evaluation did not converge" {:iterations rule-fuel :rules (mapv first (keys rules))}))
       (let [sols' (reduce-kv (fn [acc key bodies]
                                (update acc key
@@ -459,14 +457,14 @@
     (and (vector? binding-form) (= '... (last binding-form)))
     (let [vars (vec (butlast binding-form))]
       (when-not (= 1 (count vars))
-        (err :query/bad-binding "Only single-var collection bindings are supported" {:binding binding-form}))
+        (core/err :query/bad-binding "Only single-var collection bindings are supported" {:binding binding-form}))
       (map (fn [x] {(first vars) x}) value))
     (and (= 1 (count binding-form)) (vector? (first binding-form)))
     (let [vars (first binding-form)]
       (map (fn [row] (apply hash-map (interleave vars row))) value))
     (and (vector? binding-form) (every? symbol? binding-form))
     [(zipmap binding-form value)]
-    :else (err :query/bad-binding "Unsupported binding form" {:binding binding-form})))
+    :else (core/err :query/bad-binding "Unsupported binding form" {:binding binding-form})))
 
 ;; ---- projection -------------------------------------------------------------------
 
@@ -572,18 +570,18 @@
   when the :in clause names %, a sequence of rules."
   [query inputs]
   (let [{:keys [find in with where]} (parse-query query)
-        _ (when (empty? find) (err :query/bad-query "Query needs :find" {}))
-        _ (when (empty? where) (err :query/bad-query "Query needs :where" {}))
+        _ (when (empty? find) (core/err :query/bad-query "Query needs :find" {}))
+        _ (when (empty? where) (core/err :query/bad-query "Query needs :where" {}))
         spec (parse-find find)
         in (vec (or (not-empty in) ['$]))
         _ (when-not (= (count in) (count inputs))
-            (err :query/arity
+            (core/err :query/arity
                  "Number of inputs does not match :in" {:expected (count in) :given (count inputs)}))
         pairs (map vector in inputs)
         db (or (some (fn [[f v]] (when (= f '$) v)) pairs)
-               (err :query/no-db "Query requires a database bound to $" {}))
+               (core/err :query/no-db "Query requires a database bound to $" {}))
         _ (when-not (map? db)
-            (err :query/no-db "$ must be a db value" {}))
+            (core/err :query/no-db "$ must be a db value" {}))
         rules (when-let [rs (some (fn [[f v]] (when (= f '%) v)) pairs)]
                 (parse-rules rs))
         rule-sols (if (seq rules) (solve-rules db rules) {})

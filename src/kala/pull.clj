@@ -4,8 +4,6 @@
   :as options."
   (:require [kala.core :as core]))
 
-(defn- err [kind msg data]
-  (throw (ex-info msg (merge {:kala/error kind} data))))
 
 ;; ---- pattern parsing -----------------------------------------------------------
 
@@ -28,19 +26,19 @@
     (vector? x)
     (let [ident (first x)]
       (when-not (keyword? ident)
-        (err :pull/bad-pattern "Attribute expression must start with a keyword" {:expr x}))
+        (core/err :pull/bad-pattern "Attribute expression must start with a keyword" {:expr x}))
       (loop [spec (parse-attr-key ident)
              [o v & more] (rest x)]
         (if-not o
           spec
           (do (when-not (contains? pull-options o)
-                (err :pull/bad-pattern "Unknown pull option" {:option o}))
+                (core/err :pull/bad-pattern "Unknown pull option" {:option o}))
               (recur (assoc-in spec [:opts o] v) more)))))
-    :else (err :pull/bad-pattern "Unsupported pull element" {:element x})))
+    :else (core/err :pull/bad-pattern "Unsupported pull element" {:element x})))
 
 (defn- parse-map-spec [m]
   (when-not (= 1 (count m))
-    (err :pull/bad-pattern "Map specs have exactly one entry" {:spec m}))
+    (core/err :pull/bad-pattern "Map specs have exactly one entry" {:spec m}))
   (let [[k pattern] (first m)
         spec (parse-attr-expr k)]
     (assoc spec :pattern (parse-pattern pattern))))
@@ -57,7 +55,7 @@
     (keyword? pat) {:specs [(parse-spec pat)]}
     (vector? pat) {:specs (mapv parse-spec pat)}
     (map? pat) {:specs [(parse-map-spec pat)]}
-    :else (err :pull/bad-pattern "Unsupported pull pattern" {:pattern pat})))
+    :else (core/err :pull/bad-pattern "Unsupported pull pattern" {:pattern pat})))
 
 ;; ---- evaluation ------------------------------------------------------------------
 
@@ -91,7 +89,7 @@
 (defn- pull-forward [db e spec]
   (let [{:keys [attr opts pattern]} spec
         attr-map (or (core/attribute db attr)
-                     (err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
+                     (core/err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
         vs (map :v (core/entity-datoms db (:id attr-map) (core/resolve-entid db e)))
         vs (if-some [lim (:limit opts)] (take lim vs) vs)
         vals (if pattern
@@ -106,7 +104,7 @@
 (defn- pull-reverse [db e spec]
   (let [{:keys [attr opts pattern]} spec
         attr-map (or (core/attribute db attr)
-                     (err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
+                     (core/err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
         referrers (core/referrers db attr-map e)
         referrers (if-some [lim (:limit opts)] (take lim referrers) referrers)
         vals (if pattern
