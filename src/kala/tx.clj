@@ -80,8 +80,9 @@
   (cond
     (and (contains? #{:db/add :db/retract} (first op)) (= 4 (count op))) op
     (and (contains? retract-entity-ops (first op)) (= 2 (count op))) op
+    (and (= :db.fn/cas (first op)) (= 5 (count op))) op
     :else (core/err :transact/bad-op
-                    "Operations must be [:db/add e a v], [:db/retract e a v], or [:db.fn/retractEntity e]"
+                    "Operations must be [:db/add e a v], [:db/retract e a v], [:db.fn/retractEntity e], or [:db.fn/cas e a old new]"
                     {:op op})))
 
 (defn- resolve-static-e [db x]
@@ -260,22 +261,50 @@
                   "Unique value already held by another entity" {:op op}))
       [db e'])))
 
+;; Compare-and-swap on a cardinality-one attribute: the write lands only if
+;; the current value matches :old (nil :old expects the attribute to be
+;; absent). Everything else about the write is an ordinary add — value-type
+;; validation and uniqueness included — so a failed CAS leaves the db
+;; untouched and a successful one flows through the same primitives.
+(defn- apply-cas [db {:keys [tx ensure-temp]} [_ e a old new :as op]]
+  (let [attr (or (core/lookup-attr db a)
+                 (core/err :transact/unknown-attribute "Unknown attribute" {:attribute a}))]
+    (when (= :db.cardinality/many (:cardinality attr))
+      (core/err :transact/bad-op "CAS requires a cardinality-one attribute" {:op op}))
+    (let [e (resolve-static-e db e)
+          current (some-> (current-datom-any-v db e (:id attr)) :v)
+          matches? (if (nil? old)
+                     (nil? current)
+                     (and (some? current) (core/value-eq current old)))]
+      (if (not matches?)
+        (core/err :transact/cas-failed "CAS failed — the current value does not match :old"
+                  {:op op :old old :new new :actual current})
+        (let [[db v] (resolve-v db :db/add attr new ensure-temp)
+              _ (validate-value-type attr v op)
+              holder (when (:unique attr) (avet-holder db (:id attr) v))]
+          (when (and holder (not= holder e))
+            (core/err :transact/unique-conflict
+                      "Unique value already held by another entity" {:op op}))
+          (apply-add db tx attr e v))))))
+
 (defn- apply-op [db {:keys [tx temps ensure-temp upsert-claimants] :as txn} [kind e a v :as op]]
   (if (contains? retract-entity-ops kind)
     (let [[db' ds] (retract-entity db tx (resolve-static-e db e))]
       [db' ds])
-    (let [attr (or (core/lookup-attr db a)
-                   (core/err :transact/unknown-attribute "Unknown attribute" {:attribute a}))
-          [db v] (resolve-v db kind attr v ensure-temp)
-          _ (validate-value-type attr v op)
-          unique (:unique attr)
-          unique-holder (when (and unique (= :db/add kind))
-                          (avet-holder db (:id attr) v))
-          [db e] (resolve-e db kind e unique-holder unique txn op)
-          [db' datoms] (if (= :db/add kind)
-                         (apply-add db tx attr e v)
-                         (apply-retract db tx attr e v))]
-      [db' datoms])))
+    (if (= :db.fn/cas kind)
+      (apply-cas db txn op)
+      (let [attr (or (core/lookup-attr db a)
+                     (core/err :transact/unknown-attribute "Unknown attribute" {:attribute a}))
+            [db v] (resolve-v db kind attr v ensure-temp)
+            _ (validate-value-type attr v op)
+            unique (:unique attr)
+            unique-holder (when (and unique (= :db/add kind))
+                            (avet-holder db (:id attr) v))
+            [db e] (resolve-e db kind e unique-holder unique txn op)
+            [db' datoms] (if (= :db/add kind)
+                           (apply-add db tx attr e v)
+                           (apply-retract db tx attr e v))]
+        [db' datoms]))))
 
 ;; Schema is data: entities that gain a :db/ident become resolvable, and those
 ;; that also carry :db/valueType become attributes, re-derived from their datoms

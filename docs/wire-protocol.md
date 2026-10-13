@@ -52,9 +52,10 @@ recent speculative values; nothing is committed.
     {:status :error :error <namespaced kind> :message "..." :extra...}
 
 Error kinds are the engine's typed kinds (`:transact/unique-conflict`,
-`:transact/bad-value-type`, `:query/unknown-attribute`,
-`:protocol/version-mismatch`, `:transactor/error`, ...). Writes that fail
-leave the database untouched; clients may retry safely.
+`:transact/cas-failed`, `:transact/bad-value-type`,
+`:query/unknown-attribute`, `:protocol/version-mismatch`,
+`:transactor/error`, ...). Writes that fail leave the database untouched;
+clients may retry safely.
 
 ## Notifications
 

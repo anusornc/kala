@@ -96,6 +96,7 @@
    :transact/unique-not-supported [:attribute]
    :transact/unique-conflict [:op]
    :transact/conflicting-upserts [:op]
+   :transact/cas-failed [:op :old :new :actual]
    :transact/nested-map-requires-component [:attribute]
    :datoms/unknown-index [:index]
    :datoms/bad-components [:index :components]

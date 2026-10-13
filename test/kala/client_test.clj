@@ -139,6 +139,9 @@
          (api/transact % [[:db/add "y" :person/email "a@x"]]))]
    [:transact/conflicting-upserts
     #(api/transact % [[:db/add "t1" :person/login "va"] [:db/add "t1" :person/login "vb"]])]
+   [:transact/cas-failed
+    #(let [{:keys [tempids]} (api/transact % [[:db/add "x" :person/age 30]])]
+       (api/transact % [[:db.fn/cas (get tempids "x") :person/age 99 100]]))]
    [:transact/nested-map-requires-component
     #(api/transact % [{:db/id "alice" :person/friend {:db/id "nested" :person/name "N"}}])]
    [:datoms/unknown-index #(api/datoms (api/db %) :nope [])]

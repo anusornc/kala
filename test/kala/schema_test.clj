@@ -243,6 +243,79 @@
   (define! conn "email" :t/email :db.type/string {:unique :db.unique/identity})
   (define! conn "name" :t/name :db.type/string))
 
+;; ---- compare-and-swap --------------------------------------------------------
+
+(deftest cas-asserts-only-when-old-matches
+  (let [conn (fresh-conn)]
+    (define! conn "a" :t/age :db.type/long)
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "e" :t/age 30]])
+          eid (get tempids "e")]
+      (testing "matching old value applies the new one"
+        (api/transact conn [[:db.fn/cas eid :t/age 30 31]])
+        (is (= [31] (mapv :v (api/datoms (api/db conn) :eavt [eid])))))
+      (testing "nil old expects the attribute to be absent"
+        (define! conn "n" :t/nick :db.type/string)
+        (api/transact conn [[:db.fn/cas eid :t/nick nil "Ace"]])
+        (is (= ["Ace"] (mapv :v (api/datoms (api/db conn) :eavt [eid :t/nick])))))
+      (testing "current already equal to new is a no-op"
+        (let [{:keys [tx-data]} (api/transact conn [[:db.fn/cas eid :t/age 31 31]])]
+          (is (= [:db/txInstant] (mapv :a tx-data)))
+          (is (= [31] (mapv :v (api/datoms (api/db conn) :eavt [eid :t/age])))))))))
+
+(deftest cas-failure-is-structured-and-leaves-db-unchanged
+  (let [conn (fresh-conn)]
+    (define! conn "a" :t/age :db.type/long)
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "e" :t/age 30]])
+          eid (get tempids "e")]
+      (assert-error :transact/cas-failed
+        (api/transact conn [[:db.fn/cas eid :t/age 99 100]]))
+      (testing "the failed write left nothing behind"
+        (is (= [30] (mapv :v (api/datoms (api/db conn) :eavt [eid])))))
+      (testing "the error carries op, old, new, and actual"
+        (try (api/transact conn [[:db.fn/cas eid :t/age 99 100]])
+             (is false "expected ex-info")
+             (catch clojure.lang.ExceptionInfo e
+               (let [d (ex-data e)]
+                 (is (= [:db.fn/cas eid :t/age 99 100] (:op d)))
+                 (is (= 99 (:old d)))
+                 (is (= 100 (:new d)))
+                 (is (= 30 (:actual d)))))))
+      (testing "a retried CAS with the right old value succeeds"
+        (api/transact conn [[:db.fn/cas eid :t/age 30 100]])
+        (is (= [100] (mapv :v (api/datoms (api/db conn) :eavt [eid]))))))))
+
+(deftest cas-rejects-invalid-uses
+  (let [conn (fresh-conn)]
+    (define! conn "a" :t/age :db.type/long)
+    (define! conn "tags" :t/tag :db.type/string {:cardinality :db.cardinality/many})
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "e" :t/age 30]
+                                                [:db/add "e" :t/tag "x"]])
+          eid (get tempids "e")]
+      (testing "cardinality-many attributes cannot be CASed"
+        (assert-error :transact/bad-op
+          (api/transact conn [[:db.fn/cas eid :t/tag "x" "y"]])))
+      (testing "unknown attributes fail like any write"
+        (assert-error :transact/unknown-attribute
+          (api/transact conn [[:db.fn/cas eid :t/nope nil 1]])))
+      (testing "tempids cannot address a CAS (nothing to compare)"
+        (assert-error :transact/bad-entity
+          (api/transact conn [[:db.fn/cas "brand-new" :t/age nil 1]])))
+      (testing "a unique new value conflicting with another entity fails"
+        (install-email-schema! conn)
+        (api/transact conn [[:db/add "u1" :t/email "taken@x"]])
+        (assert-error :transact/unique-conflict
+          (api/transact conn [[:db.fn/cas eid :t/email nil "taken@x"]])))
+      (testing "CAS onto the holder's own unique value is a no-op"
+        (api/transact conn [[:db.fn/cas eid :t/email nil "mine@x"]])
+        (api/transact conn [[:db.fn/cas eid :t/email "mine@x" "mine@x"]])
+        (is (= ["mine@x"] (mapv :v (api/datoms (api/db conn) :eavt [eid :t/email])))))
+      (testing "a matching CAS moves the unique slot, the entity keeps its identity"
+        (api/transact conn [[:db.fn/cas eid :t/email "mine@x" "moved@x"]])
+        (let [db (api/db conn)]
+          (is (= eid (ffirst (api/q '[:find ?e :where [?e :t/email "moved@x"]] db))))
+          (is (empty? (api/q '[:find ?e :where [?e :t/email "mine@x"]] db)))))))
+
+
 (deftest unique-identity-upserts-onto-the-existing-entity
   (let [conn (fresh-conn)]
     (install-email-schema! conn)
@@ -338,4 +411,4 @@
         (is (seq (api/datoms db :eavt [friend]))))
       (testing "retracting a second time is a noop (only the stamp)"
         (let [{:keys [tx-data]} (api/transact conn [[:db.fn/retractEntity order]])]
-          (is (= [:db/txInstant] (mapv :a tx-data))))))))
+          (is (= [:db/txInstant] (mapv :a tx-data)))))))))
