@@ -358,22 +358,28 @@
 (defn materialize
   "An entity's datoms as a plain map keyed by attribute ident (the raw attr
   id when no schema entry exists), :db/id kept as the argument's original
-  reference. Cardinality-many attributes collect into vectors. The optional
-  value-fn transforms each (attr value) before it lands — kala.entity's
-  touch expands components through it. Public for kala.entity and
-  kala.pull, whose touch and wildcard reads are this one shape."
+  reference. Cardinality-many attributes collect into vectors. A keyword
+  eid that resolves to nothing materializes as nil — an entity that does
+  not exist reads as absent, not as an error. The optional value-fn
+  transforms each (attr value) before it lands — kala.entity's touch
+  expands components through it. Public for kala.entity and kala.pull,
+  whose touch and wildcard reads are this one shape."
   ([db e]
    (materialize db e (fn [_attr v] v)))
   ([db e value-fn]
-   (reduce (fn [m ^Datom d]
-             (let [attr (lookup-attr db (.a d))
-                   a (or (:ident attr) (.a d))
-                   v (value-fn attr (.v d))]
-               (if (many-attr? attr)
-                 (update m a (fnil conj []) v)
-                 (assoc m a v))))
-           {:db/id e}
-           (index-slice db :eavt [(resolve-entid db e)]))))
+   ;; the resolved id only addresses the slice; an unresolvable keyword
+   ;; materializes nil
+   (let [resolved (resolve-entid db e)]
+     (when resolved
+       (reduce (fn [m ^Datom d]
+                 (let [attr (lookup-attr db (.a d))
+                       a (or (:ident attr) (.a d))
+                       v (value-fn attr (.v d))]
+                   (if (many-attr? attr)
+                     (update m a (fnil conj []) v)
+                     (assoc m a v))))
+               {:db/id e}
+               (index-slice db :eavt [resolved]))))))
 
 (defn public-datom
   "The public shape of a datom: attribute resolved to its ident. Public for

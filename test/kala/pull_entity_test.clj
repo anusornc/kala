@@ -143,17 +143,17 @@
 
 (deftest pull-with-unresolvable-keyword-eid
   (let [conn (load-fixture!)]
-    ;; pinned: the slice entry check meets an unresolved nil eid in the
-    ;; index comparator — accidental, but preserved by the bridge switch
-    (is (thrown? NullPointerException
-                 (api/pull (api/db conn) '[*] :nope/unknown)))))
+    ;; policy: an entity that does not exist reads as absent — pull returns
+    ;; nil per its contract, no error (matches Datomic; the pre-bridge
+    ;; behavior was an accidental NPE)
+    (is (nil? (api/pull (api/db conn) '[*] :nope/unknown)))))
 
 (deftest entity-reverse-nav-unresolvable-keyword-eid-errors
   (let [conn (load-fixture!)
         {:keys [bob]} (fixture-ids (api/db conn))]
     ;; pinned: on VAET the sought entity rides the ref-typed :v slot, so the
     ;; keyword must resolve (the :e-slot rule resolve-components applies);
-    ;; pull never reaches this rule, its entry check NPEs first
+    ;; pull returns nil before ever reaching this rule
     (try (:person/_friend (api/entity (api/db conn) :nope/unknown))
          (is false "expected ex-info")
          (catch clojure.lang.ExceptionInfo e
@@ -163,8 +163,8 @@
 
 (deftest touch-with-unresolvable-keyword-eid
   (let [conn (load-fixture!)]
-    (is (thrown? NullPointerException
-                 (api/touch (api/entity (api/db conn) :nope/unknown))))))
+    ;; policy: touch materializes a non-existent entity as nil, like pull
+    (is (nil? (api/touch (api/entity (api/db conn) :nope/unknown))))))
 
 ;; ---- pull inside queries -----------------------------------------------------
 
@@ -212,8 +212,9 @@
 (deftest entity-point-read-with-unresolvable-keyword-eid-is-absent
   (let [conn (load-fixture!)
         e (api/entity (api/db conn) :nope/unknown)]
-    ;; :db/id passes the keyword through; point reads through the bridge's
-    ;; hash views return absent (the old slow path NPE'd in the comparator)
+    ;; policy: point reads through the bridge's hash views return absent and
+    ;; :db/id passes the keyword through — an unresolvable keyword reads as
+    ;; missing data, not an error (deliberate since the bridge switch)
     (is (= :nope/unknown (:db/id e)))
     (is (nil? (:person/name e)))))
 

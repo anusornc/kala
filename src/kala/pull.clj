@@ -114,7 +114,8 @@
 
 (defn pull
   "Shape one entity into a document per the pull pattern. Entities without
-  datoms pull as nil."
+  datoms pull as nil — including a keyword eid that resolves to nothing."
   [db pattern eid]
-  (when (seq (core/index-slice db :eavt [(core/resolve-entid db eid)]))
-    (pull-entity* db (parse-pattern pattern) eid)))
+  (let [resolved (core/resolve-entid db eid)]
+    (when (and resolved (seq (core/index-slice db :eavt [resolved])))
+      (pull-entity* db (parse-pattern pattern) eid))))
