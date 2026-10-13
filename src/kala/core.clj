@@ -9,7 +9,8 @@
   keyed :kala.core/*, which every kala module shares."
   (:require [clojure.string :as str]
             [kala.eid :as eid]
-            [kala.storage :as storage]))
+            [kala.storage :as storage]
+            [kala.weak-cache :as weak-cache]))
 
 ;; ---- errors -----------------------------------------------------------------
 
@@ -254,50 +255,28 @@
 ;; are pure functions of one attribute's slice of an index: a flat vector for
 ;; scans, and hash maps for [a v] / [e a] point lookups.
 ;;
-;; The cache lives OUTSIDE db values, keyed by the value itself in a weak
-;; hash map: db values must stay plain maps (structural equality is part of
-;; their observable surface), the cache must be shared by equal db values —
-;; sound because a view is a pure function of the index sets — and it must
-;; die with the last reference to the db value, which weak keys give us.
-;; Clojure maps cache their hashCode, so the equality-keyed lookup is O(1)
-;; after the first touch of a db value.
+;; The views cache through kala.weak-cache, keyed by the db value itself —
+;; db values must stay plain maps (structural equality is part of their
+;; observable surface), and caching views is sound because a view is a pure
+;; function of the index sets. Views reference only datoms, so no
+;; strip-before-store is needed. Clojure maps cache their hashCode, so the
+;; equality-keyed lookup is O(1) after the first touch of a db value.
 
-(def ^:private ^java.util.Map view-caches
-  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
-
-(defn- db-views [db]
-  (locking view-caches
-    (or (.get view-caches db)
-        (let [a (atom {})]
-          (.put view-caches db a)
-          a))))
+(def ^:private view-caches (weak-cache/make))
 
 (defn- attr-vec
   "The attribute's datoms as a flat vector in index order."
   [db index a-id]
-  (let [build (fn [] (vec (slice (get db (:set (index-specs index))) index [a-id])))
-        a (db-views db)
-        k [index a-id]]
-    (or (get @a k)
-        (let [v (build)]
-          (swap! a assoc k v)
-          v))))
+  (weak-cache/fetch view-caches db [index a-id]
+                    #(vec (slice (get db (:set (index-specs index))) index [a-id]))))
 
 (defn- attr-vmap [db a-id]
-  (let [a (db-views db)
-        k [:vmap a-id]]
-    (or (get @a k)
-        (let [m (group-by :v (attr-vec db :aevt a-id))]
-          (swap! a assoc k m)
-          m))))
+  (weak-cache/fetch view-caches db [:vmap a-id]
+                    #(group-by :v (attr-vec db :aevt a-id))))
 
 (defn- attr-emap [db a-id]
-  (let [a (db-views db)
-        k [:emap a-id]]
-    (or (get @a k)
-        (let [m (group-by :e (attr-vec db :aevt a-id))]
-          (swap! a assoc k m)
-          m))))
+  (weak-cache/fetch view-caches db [:emap a-id]
+                    #(group-by :e (attr-vec db :aevt a-id))))
 
 ;; Bridges for the query engine (kala.query) and the entity/pull readers,
 ;; which work on raw datoms with attribute ids. Ident translation lives at

@@ -6,7 +6,8 @@
   (:require [kala.core :as core]
             [kala.eid :as eid]
             [kala.storage :as storage]
-            [kala.tx :as tx])
+            [kala.tx :as tx]
+            [kala.weak-cache :as weak-cache])
   (:import [kala.core Datom]))
 
 (defn- normalize-t [x]
@@ -57,37 +58,19 @@
 ;; ---- replay cache ----------------------------------------------------------------
 ;; The log is append-only, so a replay up to a fixed t is a pure function of
 ;; entries that can never change: as-of and history are cacheable with no
-;; invalidation. Following the ADR-0002 read-view pattern, the cache lives
-;; OUTSIDE db values — db values stay plain maps (structural equality is part
-;; of their observable surface). It is a weak map keyed by the storage handle
-;; with a per-handle atom of entries keyed [up-to-t history?]: both storage
-;; backends hand out fresh reify handles whose equality is identity, so
-;; equal-but-distinct handles over one directory simply hold separate entries,
-;; and the weak key lets a handle's whole entry set die with it.
-;;
-;; Entries store the replayed db stripped of ::storage: a db value carries its
-;; handle, and a value that strongly refers to its own weak key prevents the
-;; key from ever being reclaimed. Hits re-assoc the live handle, restoring a
-;; db equal to a fresh replay.
+;; invalidation. The cache is a kala.weak-cache keyed by the storage handle —
+;; both storage backends hand out fresh reify handles whose equality is
+;; identity, so equal-but-distinct handles over one directory simply hold
+;; separate entries. Entries store the replayed db stripped of ::storage per
+;; the module's no-self-reference invariant, and every fetch re-assocs the
+;; live handle, restoring a db equal to a fresh replay.
 
-(def ^:private ^java.util.Map replay-caches
-  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
-
-(defn- replay-cache [storage]
-  (locking replay-caches
-    (or (.get replay-caches storage)
-        (let [a (atom {})]
-          (.put replay-caches storage a)
-          a))))
+(def ^:private replay-caches (weak-cache/make))
 
 (defn- cached-replay [storage up-to-t history?]
-  (let [a (replay-cache storage)
-        k [up-to-t history?]]
-    (or (when-some [db (get @a k)]
-          (assoc db ::core/storage storage))
-        (let [db (replay storage up-to-t history?)]
-          (swap! a assoc k (dissoc db ::core/storage))
-          db))))
+  (assoc (weak-cache/fetch replay-caches storage [up-to-t history?]
+                           #(dissoc (replay storage up-to-t history?) ::core/storage))
+         ::core/storage storage))
 
 (defn as-of
   "The db value as of transaction t (a t counter or a tx entity id)."

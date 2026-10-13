@@ -5,7 +5,7 @@
   namespaces (entity navigation and storage introspection are peer-only).
   Suites that run once, outside the matrix — the client's own coverage,
   recovery, the per-adapter storage seams, the transactor, and the
-  pure-arithmetic unit suite (kala.eid-test) — are listed below."
+  unit suites (kala.eid-test, kala.weak-cache-test) — are listed below."
   (:require [clojure.test :as t]
 
             [kala.api-test]
@@ -22,7 +22,8 @@
             [kala.transactor-test]
             [kala.wire-test]
             [kala.storage.memory-test]
-            [kala.storage.file-test]))
+            [kala.storage.file-test]
+            [kala.weak-cache-test]))
 
 (def ^:private behavioral-ns-symbols
   ['kala.api-test
@@ -41,6 +42,7 @@
    'kala.eid-test
    'kala.file-recovery-test
    'kala.transactor-test
+   'kala.weak-cache-test
    'kala.wire-test
    'kala.storage.memory-test
    'kala.storage.file-test])
