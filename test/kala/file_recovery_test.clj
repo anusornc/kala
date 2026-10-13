@@ -6,7 +6,7 @@
             [kala.api :as api]
             [kala.eid :as eid]
             [kala.storage :as storage]
-            [kala.test-util :refer [define!]]))
+            [kala.test-util :refer [define! install-tx-fn!]]))
 
 (defn- tmp-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -70,3 +70,22 @@
                 (is (= ["Alice"]
                        (mapv :v (api/datoms (api/as-of db-now first-t)
                                             :eavt [alice name-aid])))))))))))
+
+(deftest transaction-function-effects-are-log-expansions
+  ;; A stored fn runs once at transact time; the log records what it DID (its
+  ;; expansion datoms), so rebuilding applies datoms and never re-runs source.
+  (let [db-dir (tmp-dir)
+        conn (api/connect {:storage :file :path db-dir})]
+    (define! conn "n" :t/n :db.type/long)
+    (install-tx-fn! conn :t/claim
+                    "(fn [db e] (if (empty? (kala.api/q '[:find ?c :in $ ?e :where [?e :t/n ?c]] db (kala.api/entid db e))) [[:db/add e :t/n 99]] nil))")
+    (let [{:keys [tempids t]} (api/transact conn [[:t/claim "e"]])
+          e (get tempids "e")
+          n-aid (api/entid (api/db conn) :t/n)]
+      (testing "the fn's effect landed through the call"
+        (is (= [99] (mapv :v (api/datoms (api/db conn) :eavt [e n-aid])))))
+      (testing "the call's log entry carries the expansion, not an invocation"
+        (let [entry (first (filter #(= t (:t %)) (log-entries db-dir)))]
+          (is (some (fn [[_ _ v _ _]] (= 99 v)) (:datoms entry)))))
+      (testing "a rebuilt db applies the expansion exactly once"
+        (is (= [99] (mapv :v (api/datoms (open-db db-dir) :eavt [e n-aid]))))))))

@@ -1,11 +1,12 @@
 (ns kala.schema-test
   "Behavioral seam: schema enforcement — value-type validation, uniqueness and
-  upserts, component cascade on entity retraction, and the AVET index."
+  upserts, component cascade on entity retraction, compare-and-swap, stored
+  transaction functions, and the AVET index."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
             [kala.core :as core]
             [kala.test-util :as test-util
-             :refer [assert-error define! fresh-conn]]))
+             :refer [assert-error define! fresh-conn install-tx-fn!]]))
 
 ;; ---- value-type validation --------------------------------------------------
 
@@ -412,3 +413,156 @@
       (testing "retracting a second time is a noop (only the stamp)"
         (let [{:keys [tx-data]} (api/transact conn [[:db.fn/retractEntity order]])]
           (is (= [:db/txInstant] (mapv :a tx-data)))))))))
+
+;; ---- transaction functions (story 17, ADR-0004) -------------------------------
+
+(defn install-count-schema! [conn]
+  (define! conn "n" :t/count :db.type/long))
+
+(def set-five-src "(fn [db e] [[:db/add e :t/count 5]])")
+
+(deftest transaction-functions-are-stored-data-and-splice-at-call
+  (let [conn (fresh-conn)]
+    (install-count-schema! conn)
+    (install-tx-fn! conn :t/set-five set-five-src)
+    (testing "the fn is ordinary data: an enum plus a :db/fn string, queryable"
+      (let [db (api/db conn)
+            e (api/entid db :t/set-five)]
+        (is (pos? e))
+        (is (= [set-five-src] (mapv :v (api/datoms db :eavt [e (api/entid db :db/fn)]))))
+        (is (= [:t/set-five]
+               (map first (api/q '[:find ?i :in $ ?src
+                                   :where [?e :db/fn ?src] [?e :db/ident ?i]]
+                                 db set-five-src))))))
+    (testing "bare-ident invocation; a tempid arg resolves in the expansion"
+      (let [{:keys [tempids]} (api/transact conn [[:db/add "e" :t/count 0]
+                                                  [:t/set-five "e"]])
+            e (get tempids "e")]
+        (is (= [5] (mapv :v (api/datoms (api/db conn) :eavt [e :t/count]))))))
+    (testing ":db.fn/call form splices at the call position — the next op
+              sees the fn's effect (:db.fn/cas matches only then)"
+      (let [{:keys [tempids]} (api/transact conn [[:db/add "e" :t/count 0]])
+            e (get tempids "e")]
+        (api/transact conn [[:db.fn/call :t/set-five e]
+                            [:db.fn/cas e :t/count 5 6]])
+        (is (= [6] (mapv :v (api/datoms (api/db conn) :eavt [e :t/count]))))))))
+
+(deftest transaction-function-receives-the-accumulated-db
+  (let [conn (fresh-conn)]
+    (install-count-schema! conn)
+    ;; claims the count only when none is visible: the query reads the db as
+    ;; of the call position — prior ops of the same tx applied
+    (install-tx-fn! conn :t/claim
+                    "(fn [db e] (if (empty? (kala.api/q '[:find ?c :in $ ?e :where [?e :t/count ?c]] db (kala.api/entid db e))) [[:db/add e :t/count 99]] nil))")
+    (let [{:keys [tempids]} (api/transact conn [[:db/add "e" :t/count 0]])
+          e (get tempids "e")]
+      (testing "a count written earlier in the SAME tx suppresses the claim —
+                a stale db would claim 99 over it"
+        (api/transact conn [[:db/add e :t/count 7] [:t/claim e]])
+        (is (= [7] (mapv :v (api/datoms (api/db conn) :eavt [e :t/count]))))))
+    (testing "nothing visible: the fn's write splices in"
+      (let [{:keys [tempids]} (api/transact conn [[:t/claim "other"]])
+            e (get tempids "other")]
+        (is (= [99] (mapv :v (api/datoms (api/db conn) :eavt [e :t/count]))))))))
+
+(deftest transaction-function-return-shapes
+  (let [conn (fresh-conn)]
+    (install-count-schema! conn)
+    (install-tx-fn! conn :t/noop "(fn [db] nil)")
+    (testing "nil return: the transaction is the stamp only"
+      (let [{:keys [tx-data]} (api/transact conn [[:t/noop]])]
+        (is (= [:db/txInstant] (mapv :a tx-data)))))
+    (install-tx-fn! conn :t/emit-map "(fn [db e] {:db/id e :t/count 5})")
+    (testing "map-form return expands like a map-form entity"
+      (let [{:keys [tempids]} (api/transact conn [[:t/emit-map "m"]])
+            e (get tempids "m")]
+        (is (pos? e))
+        (is (= [5] (mapv :v (api/datoms (api/db conn) :eavt [e :t/count]))))))
+    (install-tx-fn! conn :t/emit-seq
+                    "(fn [db x] [[:db/add x :t/count 1] [:db/add (str x \"-child\") :t/count 2]])")
+    (testing "sequential return may create entities; its tempids resolve in
+              the report"
+      (let [{:keys [tempids]} (api/transact conn [[:t/emit-seq "root"]])]
+        (is (pos? (get tempids "root")))
+        (is (pos? (get tempids "root-child")))))
+    (testing "speculative with() runs fns against the db value"
+      (let [db (api/db conn)
+            {:keys [tx-data]} (api/with db [[:t/emit-map "w"]])]
+        (is (some #(= :t/count (:a %)) tx-data))
+        (is (= (api/db-t db) (api/db-t (api/db conn))) "nothing committed")))))
+
+(deftest transaction-function-sources-validate-at-store-time
+  (let [conn (fresh-conn)]
+    (testing "unreadable source carries op and source"
+      (try (api/transact conn [[:db/add "f" :db/ident :t/bad]
+                               [:db/add "f" :db/fn "(not a form"]])
+           (is false "expected ex-info")
+           (catch clojure.lang.ExceptionInfo e
+             (let [d (ex-data e)]
+               (is (= :transact/bad-tx-fn (:kala/error d)))
+               (is (= [:db/add "f" :db/fn "(not a form"] (:op d)))
+               (is (= "(not a form" (:source d)))))))
+    (testing "source that evals to a non-function"
+      (assert-error :transact/bad-tx-fn
+        (api/transact conn [[:db/add "f" :db/ident :t/bad]
+                            [:db/add "f" :db/fn "(+ 1 1)"]])))
+    (testing "unresolved symbols fail compilation, never store — Clojure
+              compiles fn bodies eagerly, so nothing broken is ever stored"
+      (assert-error :transact/bad-tx-fn
+        (api/transact conn [[:db/add "f" :db/ident :t/bad]
+                            [:db/add "f" :db/fn "(fn [db] nope-symbol)"]])))
+    (testing "the fn-env namespace sees kala.api, not kala.tx privates"
+      (assert-error :transact/bad-tx-fn
+        (api/transact conn [[:db/add "f" :db/ident :t/bad]
+                            [:db/add "f" :db/fn "(fn [db] (derive-schema db))"]])))
+    (testing "every failed definition left nothing behind"
+      (is (empty? (api/q '[:find ?e :in $ ?i :where [?e :db/ident ?i]]
+                          (api/db conn) :t/bad))))))
+
+(deftest transaction-function-call-failures-are-structured
+  (let [conn (fresh-conn)]
+    (install-count-schema! conn)
+    (define! conn "x" :t/plain :db.type/string)
+    (testing "an ident naming no entity"
+      (try (api/transact conn [[:t/no-such-fn]])
+           (is false "expected ex-info")
+           (catch clojure.lang.ExceptionInfo e
+             (let [d (ex-data e)]
+               (is (= :transact/unknown-tx-fn (:kala/error d)))
+               (is (= [:t/no-such-fn] (:op d)))
+               (is (= :t/no-such-fn (:ident d)))))))
+    (testing "an ident whose entity carries no :db/fn"
+      (assert-error :transact/unknown-tx-fn
+        (api/transact conn [[:t/plain]])))
+    (install-tx-fn! conn :t/boom "(fn [db] (throw (ex-info \"boom\" {})))")
+    (testing "a throwing fn wraps into tx-fn-failed; the tx consumed no t"
+      (let [t-before (:t (api/transact conn [[:db/add "m1" :t/plain "a"]]))]
+        (try (api/transact conn [[:t/boom]])
+             (is false "expected ex-info")
+             (catch clojure.lang.ExceptionInfo e
+               (let [d (ex-data e)]
+                 (is (= :transact/tx-fn-failed (:kala/error d)))
+                 (is (= :t/boom (:fn d)))
+                 (is (= "boom" (:message d))))))
+        (is (= (+ t-before 1)
+               (:t (api/transact conn [[:db/add "m2" :t/plain "b"]]))))))
+    (testing "a return that is neither nil, sequential, nor a map"
+      (install-tx-fn! conn :t/garbage "(fn [db] 42)")
+      (assert-error :transact/bad-tx-fn
+        (api/transact conn [[:t/garbage]])))))
+
+(deftest transaction-function-recursion-is-fueled
+  (let [conn (fresh-conn)]
+    (install-count-schema! conn)
+    (define! conn "x" :t/plain :db.type/string)
+    (install-tx-fn! conn :t/spin "(fn [db] [[:t/spin]])")
+    (let [t-before (:t (api/transact conn [[:db/add "m1" :t/plain "a"]]))]
+      (try (api/transact conn [[:t/spin]])
+           (is false "expected ex-info")
+           (catch clojure.lang.ExceptionInfo e
+             (let [d (ex-data e)]
+               (is (= :transact/tx-fn-overflow (:kala/error d)))
+               (is (= 1000 (:iterations d))))))
+      (testing "the runaway transaction committed nothing"
+        (is (= (+ t-before 1)
+               (:t (api/transact conn [[:db/add "m2" :t/plain "b"]]))))))))

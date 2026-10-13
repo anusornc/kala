@@ -8,7 +8,7 @@
             [kala.storage :as storage]
             [kala.storage.memory :as memory]
             [kala.transactor :as tx]
-            [kala.test-util :refer [define!]]
+            [kala.test-util :refer [define! install-tx-fn!]]
             [kala.wire :as wire]))
 
 (defn- tmp-dir []
@@ -142,6 +142,17 @@
    [:transact/cas-failed
     #(let [{:keys [tempids]} (api/transact % [[:db/add "x" :person/age 30]])]
        (api/transact % [[:db.fn/cas (get tempids "x") :person/age 99 100]]))]
+   [:transact/unknown-tx-fn #(api/transact % [[:t/no-such-tx-fn]])]
+   ;; definition and bad source ride one tx, so the abort leaves nothing behind
+   [:transact/bad-tx-fn
+    #(api/transact % [[:db/add "fn" :db/ident :t/bad-tx-fn]
+                      [:db/add "fn" :db/fn "(fn [db] nope-symbol)"]])]
+   [:transact/tx-fn-failed
+    #(do (install-tx-fn! % :t/boom-tx-fn "(fn [db] (throw (ex-info \"boom\" {})))")
+         (api/transact % [[:t/boom-tx-fn]]))]
+   [:transact/tx-fn-overflow
+    #(do (install-tx-fn! % :t/spin-tx-fn "(fn [db] [[:t/spin-tx-fn]])")
+         (api/transact % [[:t/spin-tx-fn]]))]
    [:transact/nested-map-requires-component
     #(api/transact % [{:db/id "alice" :person/friend {:db/id "nested" :person/name "N"}}])]
    [:datoms/unknown-index #(api/datoms (api/db %) :nope [])]
@@ -177,7 +188,7 @@
     ;; the client's as-of is a lazy db pin: the t validation surfaces on the
     ;; first read through it
     #(api/q '[:find ?x :where [?x :person/name _]] (api/as-of (api/db %) "nope"))]
-   [:transact/bad-op #(api/transact % [[:db/fn "nope"]])]
+   [:transact/bad-op #(api/transact % [[:db/add "x" :person/name]])]
    [:transact/bad-entity #(api/transact % [[:db/retract "t1" :person/login "va"]])]
    [:query/bad-aggregate #(api/q '[:find (sum) :where [?x :person/name _]] (api/db %))]
    [:query/bad-binding #(api/q '[:find ?x :where [?x :person/name ?n] [(+ _)]] (api/db %))]

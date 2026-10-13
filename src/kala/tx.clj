@@ -1,8 +1,9 @@
 (ns kala.tx
   "The transaction pipeline: op validation and resolution, tempid/upsert
-  machinery, entity-map expansion, schema re-derivation (schema is data),
-  and the transact/with entry points. No I/O beyond the Storage protocol's
-  append-log at the very end of `transact`.
+  machinery, entity-map expansion, transaction-function invocation, schema
+  re-derivation (schema is data), and the transact/with entry points. No
+  I/O beyond the Storage protocol's append-log at the very end of
+  `transact`.
 
   Db values keep their shape from kala.core — plain maps keyed :kala.core/*,
   referenced here through the ::core/ alias. Index maintenance goes through
@@ -10,10 +11,26 @@
   re-implemented here."
   (:require [kala.core :as core]
             [kala.eid :as eid]
-            [kala.storage :as storage])
+            [kala.storage :as storage]
+            [kala.weak-cache :as weak-cache])
   (:import [kala.core Datom]))
 
 (def ^:private retract-entity-ops #{:db.fn/retractEntity :db/retractEntity})
+
+;; The op heads that name pipeline features rather than stored transaction
+;; functions: a keyword op head outside this set resolves as a fn call (ADR-0004).
+(def ^:private reserved-op-heads
+  #{:db/add :db/retract :db/retractEntity :db.fn/retractEntity :db.fn/cas :db.fn/call})
+
+(defn- tx-fn-call?
+  "A keyword op head that names no pipeline feature resolves as a stored
+  transaction-function call (ADR-0004): the bare ident, or :db.fn/call with
+  the ident as its target."
+  [op]
+  (let [head (first op)]
+    (and (keyword? head)
+         (or (= :db.fn/call head)
+             (not (contains? reserved-op-heads head))))))
 
 ;; The reserved tempid that names the transaction entity itself, so tx
 ;; metadata is ordinary map-form data: {:db/id "datomic.tx" :db/txInstant ...}
@@ -77,13 +94,23 @@
 (defn- validate-op [op]
   (when-not (vector? op)
     (core/err :transact/bad-op "Operations must be vectors" {:op op}))
-  (cond
-    (and (contains? #{:db/add :db/retract} (first op)) (= 4 (count op))) op
-    (and (contains? retract-entity-ops (first op)) (= 2 (count op))) op
-    (and (= :db.fn/cas (first op)) (= 5 (count op))) op
-    :else (core/err :transact/bad-op
-                    "Operations must be [:db/add e a v], [:db/retract e a v], [:db.fn/retractEntity e], or [:db.fn/cas e a old new]"
-                    {:op op})))
+  (let [head (first op)]
+    (cond
+      (and (contains? #{:db/add :db/retract} head) (= 4 (count op))) op
+      (and (contains? retract-entity-ops head) (= 2 (count op))) op
+      (and (= :db.fn/cas head) (= 5 (count op))) op
+      ;; the reserved call head with no target is a malformed op, not a fn
+      ;; call — everything else keyword-headed resolves as a stored
+      ;; transaction-function call; whether the ident names a fn is checked
+      ;; against the db in invoke-tx-fn, so validation stays structural
+      (and (= :db.fn/call head) (< (count op) 2))
+      (core/err :transact/bad-op
+                "Operations must be [:db/add e a v], [:db/retract e a v], [:db.fn/retractEntity e], [:db.fn/cas e a old new], or a transaction-function call"
+                {:op op})
+      (tx-fn-call? op) op
+      :else (core/err :transact/bad-op
+                      "Operations must be [:db/add e a v], [:db/retract e a v], [:db.fn/retractEntity e], [:db.fn/cas e a old new], or a transaction-function call"
+                      {:op op}))))
 
 (defn- resolve-static-e [db x]
   (cond
@@ -287,6 +314,109 @@
                       "Unique value already held by another entity" {:op op}))
           (apply-add db tx attr e v))))))
 
+;; ---- transaction functions (ADR-0004) -----------------------------------------
+;;
+;; A transaction function is stored as data: an entity whose ident names it
+;; and whose :db/fn attribute holds its source — an EDN-transportable string,
+;; read with the full Clojure reader (the trust posture admits full eval, so
+;; the reader is not restricted either). Invocation is by that ident, bare as
+;; the op head or via [:db.fn/call ident args...]. Source compiles once per
+;; string in the fn-env namespace — which requires kala.api and nothing of
+;; kala.tx — memoized through kala.weak-cache keyed by the source itself (the
+;; compiled fn never references its source string, so the no-self-reference
+;; invariant holds). The function receives the accumulated db (prior ops of
+;; the same tx applied) and its arguments unresolved, and returns nil,
+;; sequential tx-data, or an entity map, spliced at the call position. Trust
+;; is documented, not engineered (ADR-0004): transact access is code
+;; execution on the transactor.
+
+(def ^:private tx-fn-fuel
+  "Transaction-function invocations one transaction may make — aligned with
+  kala.query's rule fuel; both guard the same runaway-recursion shape."
+  1000)
+
+(def ^:private fn-env-ns
+  ;; created lazily, not at kala.tx load time: requiring kala.api mid-load
+  ;; would find kala.api itself mid-load and leave its vars unbound here.
+  ;; create-ns installs no mappings, so core is referred explicitly — stored
+  ;; fn bodies use bare core names — and the setup itself runs qualified.
+  (delay (let [ns (create-ns 'kala.tx-fn-env)]
+           (binding [*ns* ns]
+             (eval '(clojure.core/refer-clojure))
+             (eval '(clojure.core/require 'kala.api)))
+           ns)))
+
+(def ^:private fn-compiles (weak-cache/make))
+
+(defn- compile-tx-fn
+  "The fn object for stored source — read with the full Clojure reader and
+  compiled in fn-env, once per source string. Store-time callers run this as
+  the structural validation: the source must read and eval to an ifn before
+  the :db/fn datom is accepted. Clojure compiles fn bodies eagerly, so
+  unresolved symbols fail here too — at store time, never silently stored."
+  [source op]
+  (weak-cache/fetch fn-compiles source ::fn
+    (fn []
+      (let [form (try (read-string source)
+                      (catch Exception e
+                        (core/err :transact/bad-tx-fn
+                                  (str "Transaction function source does not read: " (.getMessage e))
+                                  {:op op :source source})))
+            f (try (binding [*ns* @fn-env-ns] (eval form))
+                   (catch Exception e
+                     (core/err :transact/bad-tx-fn
+                               (str "Transaction function source does not compile: "
+                                    (.getMessage (or (ex-cause e) e)))
+                               {:op op :source source})))]
+        (when-not (ifn? f)
+          (core/err :transact/bad-tx-fn
+                    "Transaction function source must evaluate to a function"
+                    {:op op :source source}))
+        f))))
+
+(defn- fn-output->ops
+  "A transaction function's return value as list-form ops spliced at the
+  call position: nil is a no-op, sequential values are the ops themselves,
+  a map is one entity-map expansion against the db as of the call position.
+  Anything else is a structural fn failure (:transact/bad-tx-fn)."
+  [db out op source]
+  (cond
+    (nil? out) []
+    (sequential? out) (vec out)
+    (map? out) (second (parse-entity-map db out))
+    :else (core/err :transact/bad-tx-fn
+                    "Transaction function must return nil, sequential tx-data, or an entity map"
+                    {:op op :source source})))
+
+(defn- invoke-tx-fn
+  "Resolve the op head to a stored fn, invoke it against the accumulated db,
+  and return [db expansion-ops]. Every failure mode has a structured kind:
+  the head names no stored fn (:transact/unknown-tx-fn), or the fn threw
+  (:transact/tx-fn-failed, wrapping the throw so peer and client see the
+  same shape)."
+  [db op]
+  (let [[head & more] op
+        call? (= :db.fn/call head)
+        ident (if call? (second op) head)
+        args (if call? (nnext op) more)]
+    (when-not (keyword? ident)
+      (core/err :transact/unknown-tx-fn
+                "Transaction functions are invoked by ident keyword"
+                {:op op :ident ident}))
+    (let [fn-e (or (core/entid db ident)
+                   (core/err :transact/unknown-tx-fn "No entity carries this ident" {:op op :ident ident}))
+          source (some-> (current-datom-any-v db fn-e (core/attr-eid :db/fn)) :v)]
+      (when-not (string? source)
+        (core/err :transact/unknown-tx-fn
+                  "The ident's entity carries no :db/fn source" {:op op :ident ident}))
+      (let [f (compile-tx-fn source op)
+            out (try (apply f db args)
+                     (catch Exception ex
+                       (core/err :transact/tx-fn-failed
+                                 "Transaction function threw"
+                                 {:fn ident :message (.getMessage ex)})))]
+        [db (fn-output->ops db out op source)]))))
+
 (defn- apply-op [db {:keys [tx temps ensure-temp upsert-claimants] :as txn} [kind e a v :as op]]
   (if (contains? retract-entity-ops kind)
     (let [[db' ds] (retract-entity db tx (resolve-static-e db e))]
@@ -297,6 +427,10 @@
                      (core/err :transact/unknown-attribute "Unknown attribute" {:attribute a}))
             [db v] (resolve-v db kind attr v ensure-temp)
             _ (validate-value-type attr v op)
+            ;; eager validation: a :db/fn source must read and eval to an
+            ;; ifn before the datom is accepted — a broken fn is never stored
+            _ (when (and (= :db/add kind) (= :db/fn (:ident attr)))
+                (compile-tx-fn v op))
             unique (:unique attr)
             unique-holder (when (and unique (= :db/add kind))
                             (avet-holder db (:id attr) v))
@@ -436,12 +570,31 @@
                         (second (parse-entity-map db-before x))
                         [x]))
                     tx-data)
+        ;; The op pass. A transaction-function call splices its returned
+        ;; tx-data at the call position (DataScript sequential semantics):
+        ;; the fn sees every earlier op of the tx applied, and its effects
+        ;; are in the db for everything after it. Fuel bounds runaway
+        ;; recursion across the whole call tree; the log records only the
+        ;; expansion, so replay never re-runs a fn.
         [db-after datoms]
-        (reduce (fn [[db acc] op]
-                  (let [[db' ds] (apply-op db txn (validate-op op))]
-                    [db' (into acc ds)]))
-                [db-before []]
-                ops)
+        (loop [db db-before
+               acc []
+               pending ops
+               fuel tx-fn-fuel]
+          (if-some [op (first pending)]
+            (let [op (validate-op op)
+                  pending (rest pending)]
+              (if (tx-fn-call? op)
+                (do
+                  (when (zero? fuel)
+                    (core/err :transact/tx-fn-overflow
+                              "Transaction functions exceeded the invocation fuel"
+                              {:iterations tx-fn-fuel}))
+                  (let [[db' more] (invoke-tx-fn db op)]
+                    (recur db' acc (into (vec more) pending) (dec fuel))))
+                (let [[db' ds] (apply-op db txn op)]
+                  (recur db' (into acc ds) pending fuel))))
+            [db acc]))
         ;; Every transaction entity carries :db/txInstant unless the tx itself
         ;; supplied one via metadata. The stamp is part of the transaction: it
         ;; goes to the log, the indexes, and the report's :tx-data.

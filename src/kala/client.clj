@@ -46,9 +46,15 @@
 (defn- check [reply]
   (if (= :ok (:status reply))
     reply
-    (core/err (or (:error reply) :client/error)
-              (or (:message reply) "Client request failed")
-              (dissoc reply :status :error :message))))
+    ;; the frame's :message slot carries the error text — EXCEPT for a kind
+    ;; whose whitelisted data includes :message (fail merges the data over
+    ;; it), where the client must put it back so ex-data matches peer data
+    (let [kind (or (:error reply) :client/error)
+          msg (or (:message reply) "Client request failed")
+          data (cond-> (dissoc reply :status :error :message)
+                 (some #{:message} (wire/error-data-keys-for kind))
+                 (assoc :message (:message reply)))]
+      (core/err kind msg data))))
 
 (defn connect
   "Connect to a running transactor: {:host \"127.0.0.1\" :port 4334 :name \"db\"}.

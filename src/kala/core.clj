@@ -107,7 +107,8 @@
    {:db/ident :db/doc :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :db/unique :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
    {:db/ident :db/isComponent :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
-   {:db/ident :db/txInstant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}])
+   {:db/ident :db/txInstant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}
+   {:db/ident :db/fn :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
 
 (def ^:private enum-idents
   [:db.cardinality/one :db.cardinality/many
@@ -118,7 +119,7 @@
 
 (def ^:private attr-pos
   {:db/ident 1 :db/cardinality 2 :db/valueType 3 :db/doc 4
-   :db/unique 5 :db/isComponent 6 :db/txInstant 7})
+   :db/unique 5 :db/isComponent 6 :db/txInstant 7 :db/fn 8})
 
 (defn- enum-eids []
   (into {} (map-indexed (fn [j k] [k (eid/bootstrap-eid (+ 100 j))]) enum-idents)))

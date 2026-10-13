@@ -52,6 +52,16 @@ _Avoid_: ident-only entity, keyword entity
 The db value's derived maps that resolve idents to entity ids and hold each attribute's definition — registered from schema entities and pruned when their :db/ident datom is retracted.
 _Avoid_: schema cache, catalog, schema table
 
+### Transactions
+
+**op**:
+One transaction-side operation inside tx-data: an add, a retract, a retract-entity, a compare-and-swap, or a transaction-function call. The head of an op is either a reserved op kind or the ident of a stored transaction function. Distinct from a wire op.
+_Avoid_: statement, command
+
+**transaction function**:
+A stored function invoked inside the serialized transaction: an entity whose ident names it and whose :db/fn attribute holds EDN source, evaluated on the transactor. It receives the db value as of its call position — earlier operations of the same transaction already applied — plus its arguments unresolved, and returns nil or further transaction data spliced at that position.
+_Avoid_: stored procedure, tx fn
+
 ### Access modes
 
 **peer**:

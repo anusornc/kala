@@ -154,8 +154,20 @@
            (is false "expected ex-info")
            (catch clojure.lang.ExceptionInfo e
              (is (= :transact/unknown-ident (:kala/error (ex-data e)))))))
-    (testing "bad op shape"
+    (testing "a keyword op head that names no stored fn"
       (try (api/transact conn [[:db/frobnicate "e1" :person/name "x"]])
+           (is false "expected ex-info")
+           (catch clojure.lang.ExceptionInfo e
+             ;; a keyword op head names a stored transaction function (ADR-0004):
+             ;; one nothing defines resolves as unknown-tx-fn, not bad-op
+             (is (= :transact/unknown-tx-fn (:kala/error (ex-data e)))))))
+    (testing "genuinely malformed ops"
+      (try (api/transact conn [[:db/add "e1" :person/name]])
+           (is false "expected ex-info")
+           (catch clojure.lang.ExceptionInfo e
+             (is (= :transact/bad-op (:kala/error (ex-data e)))))))
+    (testing "the reserved call head without a target"
+      (try (api/transact conn [[:db.fn/call]])
            (is false "expected ex-info")
            (catch clojure.lang.ExceptionInfo e
              (is (= :transact/bad-op (:kala/error (ex-data e)))))))))

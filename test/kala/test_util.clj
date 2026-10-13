@@ -43,6 +43,13 @@
                    (:unique opts)    (conj [:db/add tempid :db/unique (:unique opts)])
                    (:component opts) (conj [:db/add tempid :db/isComponent true])))))
 
+(defn install-tx-fn!
+  "Define a stored transaction function: an entity whose ident names it and
+  whose :db/fn attribute holds the source (ADR-0004)."
+  [conn ident source]
+  (api/transact conn [[:db/add "fn" :db/ident ident]
+                      [:db/add "fn" :db/fn source]]))
+
 (defmacro assert-error [kind & body]
   `(try ~@body
         (is false ~(str "expected ex-info " kind))
