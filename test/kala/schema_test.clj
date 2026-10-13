@@ -174,7 +174,7 @@
 (deftest enum-ident-survives-same-tx-redefinition
   ;; the prune drops only entries the entity's slice no longer justifies: a
   ;; same-tx re-assertion re-registers, and a move re-points the ident at the
-  ;; new entity — register-new-entities runs before the prune
+  ;; new entity — registration runs before the prune (tx/derive-schema)
   (let [conn (fresh-conn)]
     (api/transact conn [[:db/add "x" :db/ident :t/red]])
     (let [red (api/entid (api/db conn) :t/red)]

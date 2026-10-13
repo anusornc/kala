@@ -48,8 +48,7 @@
                                  (tx/retract-from-indexes db d)))
                              db datoms)]
               (-> db
-                  (tx/register-new-entities datoms)
-                  (tx/prune-retracted-schema datoms)
+                  (tx/derive-schema datoms)
                   (restore-next-idx datoms)
                   (assoc ::core/t t))))
           (core/empty-db storage)

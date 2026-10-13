@@ -146,7 +146,12 @@
         genesis-meta [[:db/add (eid/tx-eid bootstrap-t) :db/txInstant (java.util.Date. 0)]]]
     (into attr-tuples (into enum-tuples genesis-meta))))
 
-(defn- attr-map [{:db/keys [ident valueType cardinality unique isComponent]} id]
+(defn attr-map
+  "The registry attribute-map for a schema spec — the one constructor of the
+  ::schema-by-ident shape, cardinality default included. Public for kala.tx,
+  which re-derives the same spec from an entity's datoms at registration;
+  the bootstrap schema builds it from its literal specs."
+  [{:db/keys [ident valueType cardinality unique isComponent]} id]
   {:id id
    :ident ident
    :value-type valueType

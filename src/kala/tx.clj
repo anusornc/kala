@@ -278,10 +278,9 @@
       [db' datoms])))
 
 ;; Schema is data: entities that gain a :db/ident become resolvable, and those
-;; that also carry :db/valueType become attributes, re-derived from their datoms.
-;; Public for kala.time-travel: replay re-derives schema through this path so
-;; a rebuilt db registers exactly what the live one did.
-(defn register-new-entities [db datoms]
+;; that also carry :db/valueType become attributes, re-derived from their datoms
+;; through core/attr-map — the registry's one constructor.
+(defn- register-new-entities [db datoms]
   (if-some [ident-aid (get (::core/idents db) :db/ident)]
     (let [touched (into (sorted-set)
                         (comp (filter (fn [^Datom d] (= ident-aid (.a d))))
@@ -294,13 +293,12 @@
                   (if ident
                     (if-some [vt (get by-a (get (::core/idents db) :db/valueType))]
                       (let [idents-by-eid (into {} (map (fn [[k v]] [v k])) (::core/idents db))
-                            attr {:id e
-                                  :ident ident
-                                  :value-type (get idents-by-eid vt)
-                                  :cardinality (or (get idents-by-eid (get by-a (get (::core/idents db) :db/cardinality)))
-                                                   :db.cardinality/one)
-                                  :unique (get idents-by-eid (get by-a (get (::core/idents db) :db/unique)))
-                                  :component? (true? (get by-a (get (::core/idents db) :db/isComponent)))}
+                            attr (core/attr-map {:db/ident ident
+                                                 :db/valueType (get idents-by-eid vt)
+                                                 :db/cardinality (get idents-by-eid (get by-a (get (::core/idents db) :db/cardinality)))
+                                                 :db/unique (get idents-by-eid (get by-a (get (::core/idents db) :db/unique)))
+                                                 :db/isComponent (get by-a (get (::core/idents db) :db/isComponent))}
+                                                e)
                             _ (value-type-pred attr)
                             _ (when-not (contains? #{:db.cardinality/one :db.cardinality/many}
                                                    (:cardinality attr))
@@ -325,16 +323,13 @@
 
 ;; Schema is data on the way out too: a tx that retracts an entity's :db/ident
 ;; datom kills the registry entries the entity's net datoms no longer justify —
-;; an attribute's entries, or an enum's ::idents entry (ADR-0003).
-;; Prune reads the same datom list register-new-entities does and runs
-;; AFTER the datom pass — retract-entity resolves ref/component attributes
-;; through the registry mid-pass, so the registry must stay intact until every
-;; op has applied. Keying on the ident datom (rather than "entity gone") keeps
-;; a rebuilt db consistent: re-derivation on replay needs the ident datom to
-;; register, so the live db must drop the entry the moment its ident datom is
-;; retracted. Orphaned data datoms of the dead attribute stay in the indexes;
-;; only the registry is pruned. Public for kala.time-travel.
-(defn prune-retracted-schema [db datoms]
+;; an attribute's entries, or an enum's ::idents entry (ADR-0003). Keying on
+;; the ident datom (rather than "entity gone") keeps a rebuilt db consistent:
+;; re-derivation on replay needs the ident datom to register, so the live db
+;; must drop the entry the moment its ident datom is retracted. Orphaned data
+;; datoms of the dead attribute stay in the indexes; only the registry is
+;; pruned. The register-then-prune ordering lives on tx/derive-schema.
+(defn- prune-retracted-schema [db datoms]
   (if-some [ident-aid (get (::core/idents db) :db/ident)]
     (let [retracted (into #{}
                      (comp (filter (fn [^Datom d]
@@ -367,6 +362,19 @@
               db
               retracted))
     db))
+
+(defn derive-schema
+  "Re-derive the schema registry from a tx's net datoms: register what they
+  justify, then prune what they no longer carry (ADR-0003). Public for
+  kala.time-travel: the live pipeline and replay call this alike, so the
+  register-then-prune ordering is the registry's contract, stated here once.
+  Its caller must have finished the datom pass: retract-entity resolves
+  ref/component attributes through the registry mid-pass, so the prune must
+  not run until every op has applied."
+  [db datoms]
+  (-> db
+      (register-new-entities datoms)
+      (prune-retracted-schema datoms)))
 
 (defn transact-report
   "Pure transaction: applies tx-data against a db value and returns the
@@ -414,9 +422,7 @@
           (let [attr (get (::core/schema-by-id db-after) (core/attr-eid :db/txInstant))
                 [db' ds] (apply-add db-after tx attr tx (java.util.Date.))]
             [db' ds]))
-        db-after (-> db-stamped
-                     (register-new-entities datoms)
-                     (prune-retracted-schema datoms))
+        db-after (derive-schema db-stamped datoms)
         final-db (assoc db-after ::core/t t)]
     {:db-before db-before
      :db-after final-db
