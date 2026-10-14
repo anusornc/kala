@@ -29,7 +29,7 @@ jobs:
           distribution: temurin
           java-version: '26'
 
-      - uses: DeLaGuardo/setup-clojure@13.7
+      - uses: DeLaGuardo/setup-clojure@13.7.0
         with:
           cli: 1.12.5.1664
 
