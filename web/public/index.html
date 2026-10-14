@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kala · web demo</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <h1>Kala <span class="thin">web demo</span></h1>
+  <span class="badge">t = <b id="t">–</b></span>
+  <span class="badge"><b id="datoms">–</b> datoms</span>
+  <span class="badge" id="dir"></span>
+  <button id="reopen">Reopen from disk</button>
+  <div id="reopen-note" class="note hidden"></div>
+</header>
+
+<nav>
+  <button class="tab active" data-tab="query">Query</button>
+  <button class="tab" data-tab="transact">Transact</button>
+  <button class="tab" data-tab="datoms">Datoms</button>
+  <button class="tab" data-tab="history">History</button>
+</nav>
+
+<main>
+  <section id="panel-query" class="panel active">
+    <div class="row">
+      <label>as-of
+        <select id="asof"><option value="">now</option></select>
+      </label>
+      <button id="run" class="primary">Run query</button>
+      <span class="hint">queries are EDN, evaluated by the embedded peer</span>
+    </div>
+    <textarea id="q" rows="6" spellcheck="false"></textarea>
+    <div id="q-status" class="status"></div>
+    <div id="q-result"></div>
+    <details>
+      <summary>example queries</summary>
+      <ul id="examples"></ul>
+    </details>
+  </section>
+
+  <section id="panel-transact" class="panel">
+    <p class="hint">tx-data as an EDN vector of ops — list or map form, string tempids resolve in the report; a failed op raises the project's error kind</p>
+    <textarea id="tx" rows="6" spellcheck="false"></textarea>
+    <button id="apply" class="primary">Transact</button>
+    <div id="tx-status" class="status"></div>
+    <div id="tx-result"></div>
+  </section>
+
+  <section id="panel-datoms" class="panel">
+    <p class="hint">First 500 datoms of the EAVT index — raw facts, exactly as stored</p>
+    <div id="datoms-table"></div>
+  </section>
+
+  <section id="panel-history" class="panel">
+    <p class="hint">Every assertion (+) and retraction (−) ever transacted — retractions never delete, they append a negative datom</p>
+    <div id="history-table"></div>
+  </section>
+</main>
+
+<footer>
+  EDN in, EDN out — this page is served by a JVM process embedding Kala as a
+  peer; every operation you run goes through
+  <code>kala.api</code> in-process. <a href="https://github.com/anusornc/kala">anusornc/kala</a>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -37,6 +37,22 @@ over the transactor wire. Every claim is asserted — a mismatch aborts with a
 nonzero exit, so a run that prints `ALL PROOFS PASSED` means the behavior is
 real.
 
+## Web demo
+
+```bash
+clojure -M:web              # http://127.0.0.1:8090  (or: clojure -M:web 9000)
+```
+
+The same demo as an interactive app: a JVM server ([web/kala/web.clj](web/kala/web.clj))
+embedding Kala as a peer — JDK's built-in HttpServer, zero dependencies —
+seeding the people fixture into file storage and serving a small no-build
+browser UI. Write your own Datalog queries, transact EDN ops (failures come
+back as the project's error kinds), slide reads across t with as-of, browse
+the raw datoms and the full history, then hit **Reopen from disk** and watch
+every acked transaction survive. EDN in, EDN out — responses carry pr-str'd
+values. The server binds 127.0.0.1; tx-data is read with clojure.edn (same
+documented no-sandboxing posture as ADR-0004).
+
 ## Benchmark
 
 ```bash
