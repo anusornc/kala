@@ -1,0 +1,55 @@
+# Story 48: CI gate — the behavioral suite in both access modes (peer,
+# client) across both storage backends (memory, file) — that is exactly
+# what kala.test-runner runs — plus a bench cross-check smoke and the
+# release jar build. Runner versions pin the environment the wave gates
+# were verified against.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '26'
+
+      - uses: DeLaGuardo/setup-clojure@13.7
+        with:
+          cli: 1.12.5.1664
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+          key: ${{ runner.os }}-clj-${{ hashFiles('deps.edn') }}
+          restore-keys: ${{ runner.os }}-clj-
+
+      - name: Test matrix (peer + client x memory + file)
+        run: clojure -M:test
+
+      - name: "Bench smoke (n=200) — gate: MATCH across 3 engines"
+        run: |
+          clojure -M:bench 200 > bench-smoke.txt 2>&1 || { cat bench-smoke.txt; exit 1; }
+          cat bench-smoke.txt
+          grep -q "MATCH across 3 engines" bench-smoke.txt
+
+      - name: Release jar (bench deps must stay out)
+        run: clojure -T:build jar
