@@ -34,8 +34,10 @@ function table(el, headers, rows) {
     "</tbody></table>";
 }
 
-function showError(status, resultEl, data) {
-  status.innerHTML = `<span class="fail">${esc(String(data.kind))}</span> ${esc(data.message || "")}`;
+function showError(status, resultEl, data, extraHint) {
+  status.innerHTML =
+    `<span class="fail">${esc(String(data.kind))}</span> ${esc(data.message || "")}` +
+    (extraHint ? ` <span class="hint">${esc(extraHint)}</span>` : "");
   resultEl.innerHTML = data.data ? `<pre>${esc(String(data.data))}</pre>` : "";
 }
 
@@ -48,10 +50,16 @@ async function refreshMeta() {
   const sel = $("#asof");
   const cur = sel.value;
   sel.innerHTML = '<option value="">now</option>';
-  for (let t = m.t; t >= 1; t--) {
-    sel.insertAdjacentHTML("beforeend", `<option value="${t}">t = ${t}</option>`);
-  }
+  const labels = m["timeline-labels"] || [];
+  (m["timeline-t"] || []).forEach((t, i) => {
+    const label = labels[i] ? `${labelText(labels[i])}` : `t = ${t}`;
+    sel.insertAdjacentHTML("beforeend", `<option value="${t}">${esc(label)}</option>`);
+  });
   sel.value = cur || "";
+}
+
+function labelText(s) {
+  return s; // labels arrive preformatted from /api/meta
 }
 
 async function runQuery() {
@@ -60,7 +68,11 @@ async function runQuery() {
   const asOf = $("#asof").value;
   const data = await postJSON("/api/query" + (asOf ? "?as-of=" + asOf : ""), $("#q").value);
   if (!data.ok) {
-    showError(status, $("#q-result"), data);
+    const hint =
+      data.kind === ":query/unknown-attribute" && asOf
+        ? "this attribute may not exist at that t yet — the as-of dropdown labels what each t added; try now or a later t"
+        : null;
+    showError(status, $("#q-result"), data, hint);
     return;
   }
   status.innerHTML =

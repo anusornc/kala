@@ -17,6 +17,7 @@
   only."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.set :as cset]
             [clojure.string :as str]
             [kala.api :as api])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
@@ -217,12 +218,33 @@
   (let [db (api/db (:conn @state))
         attrs (->> (api/q '[:find ?i :where [?e :db/ident ?i]] db)
                    (mapv #(pr-str (first %)))
-                   sort)]
+                   sort)
+        ;; per-t labels for the as-of dropdown: what each step of the log
+        ;; added, so time travel reads like the story it is
+        idents-at (fn [t]
+                    (set (map first (api/q '[:find ?i :where [?e :db/ident ?i]]
+                                           (api/as-of db t)))))
+        top-t (api/db-t db)
+        prev (volatile! #{})
+        labels (mapv (fn [t]
+                       (let [ids (idents-at t)
+                             added (sort (cset/difference ids @prev))
+                             datoms (count (api/datoms (api/as-of db t) :eavt []))]
+                         (vreset! prev ids)
+                         (str "t = " t " · "
+                              (cond
+                                (empty? added) (str "no new idents")
+                                (<= (count added) 3) (str "+ " (str/join " " (map pr-str added)))
+                                :else (str "+ " (count added) " idents"))
+                              " · " datoms " datoms")))
+                     (range 1 (inc top-t)))]
     {:m {:ok true
-         :t (api/db-t db)
+         :t top-t
          :datoms (count (api/datoms db :eavt []))
          :dir (:dir @state)
-         :attributes attrs}}))
+         :attributes attrs
+         :timeline-t (vec (range 1 (inc top-t)))
+         :timeline-labels labels}}))
 
 (defn- api-reopen [_ _]
   (let [{:keys [dir] :as s} @state
