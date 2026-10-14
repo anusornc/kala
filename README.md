@@ -21,6 +21,22 @@ clojure -T:build jar     # build the release jar (EPL-1.0 notices included)
 
 The behavioral suite runs twice per cycle — peer (embedded) and client (remote, over the wire against a live transactor) — on both storage backends, which is what enforces access-mode and storage-backend parity. Entity navigation and seek scans are peer-only; clients use pull. Tests run at two seams: the behavioral API suite and the storage-protocol contract suite per adapter.
 
+## Demo
+
+```bash
+clojure -M:demo
+```
+
+A single-file walkthrough ([demo/kala/demo.clj](demo/kala/demo.clj)) proving
+the public surface end to end: schema, list- and map-form transactions,
+Datalog (predicates, joins, recursive rules, aggregates), pull, entity
+navigation (forward and reverse refs), compare-and-swap including its
+structured failure, stored transaction functions, time travel (as-of,
+history, with), durable file storage across a reopen, and a remote client
+over the transactor wire. Every claim is asserted — a mismatch aborts with a
+nonzero exit, so a run that prints `ALL PROOFS PASSED` means the behavior is
+real.
+
 ## Benchmark
 
 ```bash
@@ -57,7 +73,8 @@ Then connect remotely with `kala.client/connect` — see [docs/wire-protocol.md]
 ## Release
 
 The project lives only on this GitHub repository — no external package
-registry. Everything runs locally; there is no CI.
+registry. CI (`.github/workflows/ci.yml`) runs the behavioral matrix, the
+bench cross-check smoke, and the jar build on every push and PR.
 
 ```bash
 clojure -M:test          # run before releasing

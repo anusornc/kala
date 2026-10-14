@@ -3,6 +3,8 @@
  :aliases
  {:test {:extra-paths ["test"]
          :main-opts ["-m" "kala.test-runner"]}
+  :demo {:extra-paths ["demo"]
+         :main-opts ["-m" "kala.demo"]}
   :transactor {:main-opts ["-m" "kala.transactor"]}
   :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
           :ns-default build}
