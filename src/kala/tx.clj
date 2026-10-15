@@ -61,8 +61,7 @@
            child-ops []]
       (if-not k
         [eid (into (mapv (fn [[e a v]] [:db/add e a v]) adds) child-ops)]
-        (let [attr (or (core/lookup-attr db k)
-                       (core/err :transact/unknown-attribute "Unknown attribute" {:attribute k}))
+        (let [attr (core/require-attr db k :transact/unknown-attribute)
               many? (= :db.cardinality/many (:cardinality attr))
               ref? (= :db.type/ref (:value-type attr))
               nest! (fn [cm]
@@ -294,8 +293,7 @@
 ;; validation and uniqueness included — so a failed CAS leaves the db
 ;; untouched and a successful one flows through the same primitives.
 (defn- apply-cas [db {:keys [tx ensure-temp]} [_ e a old new :as op]]
-  (let [attr (or (core/lookup-attr db a)
-                 (core/err :transact/unknown-attribute "Unknown attribute" {:attribute a}))]
+  (let [attr (core/require-attr db a :transact/unknown-attribute)]
     (when (= :db.cardinality/many (:cardinality attr))
       (core/err :transact/bad-op "CAS requires a cardinality-one attribute" {:op op}))
     (let [e (resolve-static-e db e)
@@ -423,8 +421,7 @@
       [db' ds])
     (if (= :db.fn/cas kind)
       (apply-cas db txn op)
-      (let [attr (or (core/lookup-attr db a)
-                     (core/err :transact/unknown-attribute "Unknown attribute" {:attribute a}))
+      (let [attr (core/require-attr db a :transact/unknown-attribute)
             [db v] (resolve-v db kind attr v ensure-temp)
             _ (validate-value-type attr v op)
             ;; eager validation: a :db/fn source must read and eval to an

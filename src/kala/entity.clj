@@ -22,8 +22,7 @@
     (= k :db/id) eid
     (and (keyword? k) (core/reverse-attr? k))
     (let [ident (core/reverse-attr k)
-          attr (or (core/attribute db ident)
-                   (core/err :transact/unknown-attribute "Unknown attribute" {:attribute ident}))]
+          attr (core/require-attr db ident :transact/unknown-attribute)]
       (map (fn [e] (->Entity db e))
            (core/referrers db attr eid)))
     :else

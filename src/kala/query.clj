@@ -169,8 +169,7 @@
     (= a '_) {:any? true}
     (keyword? a)
     (let [ident (core/reverse-attr a)
-          attr (or (core/attribute db ident)
-                   (core/err :query/unknown-attribute "Unknown attribute" {:attribute a}))]
+          attr (core/require-attr db ident :query/unknown-attribute)]
       {:id (:id attr)
        :reverse (boolean (core/reverse-attr? a))
        :ref? (= :db.type/ref (:value-type attr))})
@@ -193,7 +192,15 @@
 (defn- prep-pattern [db clause]
   (let [[e a v] (pad3 clause)
         attr (resolve-attr db a)
-        v (resolve-constant db attr v)]
+        v (resolve-constant db attr v)
+        ;; a forward pattern's :e constant is the same entity reference form
+        ;; the other read doors take: a keyword resolves through entid,
+        ;; raising :query/unknown-ident when unresolvable (#34). A reverse
+        ;; pattern's entity ref rides the :v slot, already resolved above.
+        e (if (and (not (:reverse attr)) (keyword? e))
+            (or (core/entid db e)
+                (core/err :query/unknown-ident "Unknown ident in entity position" {:ident e}))
+            e)]
     (if (:reverse attr)
       [v (:id attr) e]
       [e (:id attr) v])))

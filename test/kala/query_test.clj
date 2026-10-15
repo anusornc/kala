@@ -39,6 +39,25 @@
     (is (= #{"Alice" "Bob" "Carol"}
            (set (map first (q-one conn '[:find ?n :where [_ :person/name ?n]])))))))
 
+(deftest entity-reference-in-pattern-e-slot
+  ;; #34: a keyword constant in a forward pattern's :e slot is the same
+  ;; entity reference form datoms/pull/entity take
+  (let [conn (load-fixture!)]
+    (api/transact conn [[:db/add "ai" :db/ident :t/alice]
+                        [:db/add "ai" :person/name "Alice Ident"]])
+    (let [db (api/db conn)]
+      (testing "a keyword entity ref resolves"
+        (is (= #{["Alice Ident"]}
+               (set (api/q '[:find ?n :where [:t/alice :person/name ?n]] db)))))
+      (testing "an unresolvable one raises :query/unknown-ident — the :v slot's rule"
+        (try (api/q '[:find ?n :where [:t/typo :person/name ?n]] db)
+             (is false "expected ex-info")
+             (catch clojure.lang.ExceptionInfo e
+               (is (= :query/unknown-ident (:kala/error (ex-data e))))
+               (is (= [:ident] (sort (disj (into #{} (keys (ex-data e))) :kala/error)))))))
+      (testing "a keyword bound through :in stays a value, not a reference form — parity with the references, which do not resolve query arguments either"
+        (is (= [] (api/q '[:find ?n :in $ ?e :where [?e :person/name ?n]] db :t/alice)))))))
+
 (deftest joins-across-ref-attributes
   (let [conn (load-fixture!)]
     (testing "two-hop join through a ref"

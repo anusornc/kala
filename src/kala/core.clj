@@ -214,6 +214,15 @@
   (or (get (::schema-by-ident db) ident-or-id)
       (get (::schema-by-id db) ident-or-id)))
 
+(defn require-attr
+  "The attribute's schema map, raising kind when unresolvable — the one
+  \"resolve attribute or raise\" shape every door shares. The kind stays
+  the door's choice (:transact/unknown-attribute on the write path, the
+  door's own kind on reads), so raising it changes no observable kind."
+  [db x kind]
+  (or (lookup-attr db x)
+      (err kind "Unknown attribute" {:attribute x})))
+
 ;; ---- index reads --------------------------------------------------------------
 
 (defn- low-bound [index comps]
@@ -399,9 +408,7 @@
             (err :datoms/bad-components
                  "Index prefixes have at most e/a/v components" {:index index :components comps}))
         fields (vec (butlast (:fields (index-specs index))))
-        a-res (fn [x]
-                (:id (or (lookup-attr db x)
-                         (err :transact/unknown-attribute "Unknown attribute" {:attribute x}))))
+        a-res (fn [x] (:id (require-attr db x :transact/unknown-attribute)))
         e-res (fn [x] (resolve-entid db x))
         v-res (partial ref-entid db)
         ;; resolve :a and :e slots first (:v needs the :a slot's attr id)

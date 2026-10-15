@@ -167,6 +167,8 @@
    [:query/bad-attribute #(api/q '[:find ?x :where [?x 5 ?v]] (api/db %))]
    [:query/unknown-attribute #(api/q '[:find ?x :where [?x :person/nope 1]] (api/db %))]
    [:query/unknown-ident #(api/q '[:find ?x :where [?x :person/friend :no/such]] (api/db %))]
+   ;; the :e slot's entity reference raises the same kind as the :v slot's (#34)
+   [:query/unknown-ident #(api/q '[:find ?x :where [:no/such :person/name _]] (api/db %))]
    [:query/unknown-aggregate #(api/q '[:find (nope ?x) :where [?x :person/name _]] (api/db %))]
    [:query/unknown-builtin #(api/q '[:find ?x :where [?x :person/name ?n] [(nope ?n)]] (api/db %))]
    [:query/unbound-var #(api/q '[:find ?x :where [?x :person/name ?n] [(+ ?missing)]] (api/db %))]

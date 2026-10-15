@@ -88,8 +88,7 @@
 
 (defn- pull-forward [db e spec]
   (let [{:keys [attr opts pattern]} spec
-        attr-map (or (core/attribute db attr)
-                     (core/err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
+        attr-map (core/require-attr db attr :pull/unknown-attribute)
         vs (map :v (core/entity-datoms db (:id attr-map) (core/resolve-entid db e)))
         vs (if-some [lim (:limit opts)] (take lim vs) vs)
         vals (if pattern
@@ -103,8 +102,7 @@
 
 (defn- pull-reverse [db e spec]
   (let [{:keys [attr opts pattern]} spec
-        attr-map (or (core/attribute db attr)
-                     (core/err :pull/unknown-attribute "Unknown attribute" {:attribute attr}))
+        attr-map (core/require-attr db attr :pull/unknown-attribute)
         referrers (core/referrers db attr-map e)
         referrers (if-some [lim (:limit opts)] (take lim referrers) referrers)
         vals (if pattern
