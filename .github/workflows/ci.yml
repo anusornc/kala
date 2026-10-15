@@ -55,10 +55,10 @@ jobs:
         run: web/e2e.sh
 
       - name: Project E2E — transactor journey (SIGKILL crash-recovery over real processes)
-        run: e2e.sh transactor
+        run: ./e2e.sh transactor
 
       - name: Project E2E — asserted demo walkthrough
-        run: e2e.sh demo
+        run: ./e2e.sh demo
 
       - name: Release jar (bench deps must stay out)
         run: clojure -T:build jar
