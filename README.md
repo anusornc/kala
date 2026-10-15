@@ -16,6 +16,8 @@ issue tracker.
 
 ```bash
 clojure -M:test          # full matrix: {peer, client} x {memory, file} + backend suites
+e2e.sh                   # project E2E: transactor SIGKILL crash-recovery over real
+                         #   processes, release jar, demo, web demo (all|transactor|release|demo|web)
 clojure -T:build jar     # build the release jar (EPL-1.0 notices included)
 ```
 

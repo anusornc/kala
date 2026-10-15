@@ -7,6 +7,8 @@
          :main-opts ["-m" "kala.demo"]}
   :web {:extra-paths ["web" "web/public"]
         :main-opts ["-m" "kala.web"]}
+  :e2e {:extra-paths ["e2e"]
+        :main-opts ["-m" "kala.e2e.client-journey"]}
   :transactor {:main-opts ["-m" "kala.transactor"]}
   :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
           :ns-default build}
