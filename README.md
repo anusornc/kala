@@ -7,10 +7,10 @@ transactor that serializes writes into an append-only log, an embedded peer
 library with in-memory indexes, a remote client library, Datalog queries, the
 pull API, and time travel — every db value is the database as of one t.
 
-**Status: v1 complete** — behavioral suite green across {peer, client} ×
-{memory, file}; the query-engine optimization wave (#15) and the
-original-Datomic bench adapter (#19) have landed; the roadmap lives in the
-issue tracker.
+**Status: v1 complete, published to [Clojars](https://clojars.org/io.github.anusornc/kala)** — behavioral suite green across {peer, client} ×
+{memory, file}; the query-engine optimization wave (#15), the
+original-Datomic bench adapter (#19), and the Datahike cross-check have
+landed; the roadmap lives in the issue tracker.
 
 ## Build and test
 
@@ -101,21 +101,18 @@ Then connect remotely with `kala.client/connect` — see [docs/wire-protocol.md]
 
 ## Release
 
-The project lives only on this GitHub repository — no external package
-registry. CI (`.github/workflows/ci.yml`) runs the behavioral matrix, the
-bench cross-check smoke, and the jar build on every push and PR.
+Kala is published to [Clojars](https://clojars.org/io.github.anusornc/kala):
 
-```bash
-clojure -M:test          # run before releasing
-RELEASE_VERSION=0.1.0 clojure -T:build jar   # builds target/*.jar
+```clojure
+io.github.anusornc/kala {:mvn/version "0.1.0"}
 ```
 
-To attach a jar to a tagged release on GitHub (optional):
-
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-gh release create v0.1.0 target/kala-0.1.0.jar
-```
+Releases are tag-triggered: pushing a `v*` tag runs the behavioral matrix
+as a final gate, builds the jar from the tag version, deploys to Clojars
+(deps-deploy with the `CLOJARS_USERNAME` / `CLOJARS_PASSWORD` repo
+secrets), and attaches the jar to a GitHub release. CI
+(`.github/workflows/ci.yml`) additionally runs the bench suites and the
+project/web E2E journeys on every push and PR.
 
 ## Architecture (v1 target)
 
