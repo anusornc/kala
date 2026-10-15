@@ -54,7 +54,7 @@ jobs:
           echo "JAR_NAME=kala-$VERSION.jar" >> "$GITHUB_ENV"
 
       - name: Deploy to Clojars
-        run: clojure -T:build deploy
+        run: RELEASE_VERSION="${GITHUB_REF_NAME#v}" clojure -T:build deploy
         env:
           CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}

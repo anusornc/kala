@@ -45,10 +45,19 @@
   (println "Installed" lib version))
 
 (defn deploy [_]
-  ;; credentials come from the environment: deps-deploy reads
-  ;; CLOJARS_USERNAME and CLOJARS_PASSWORD (a Clojars deploy token)
+  ;; credentials come from the environment: CLOJARS_USERNAME and
+  ;; CLOJARS_PASSWORD (a Clojars deploy token). The repository is passed
+  ;; as an explicit map — deps-deploy's string form looks the credentials
+  ;; up in ~/.m2/settings.xml and NPEs when that file has no entry.
+  ;; deps-deploy also wants a pom.xml file path; tools.build wrote ours
+  ;; under target/classes/META-INF/maven.
   (jar nil)
-  (println "Deploying" jar-file "to Clojars as" lib version)
-  ((requiring-resolve 'deps-deploy.deps-deploy/deploy)
-   {:artifact jar-file
-    :repository "clojars"}))
+  (let [pom (str class-dir "/META-INF/maven/" (namespace lib) "/" (name lib) "/pom.xml")]
+    (println "Deploying" jar-file "to Clojars as" lib version)
+    ((requiring-resolve 'deps-deploy.deps-deploy/deploy)
+     {:artifact jar-file
+      :installer :remote
+      :pom-file pom
+      :repository {"clojars" {:url "https://clojars.org/repo"
+                              :username (System/getenv "CLOJARS_USERNAME")
+                              :password (System/getenv "CLOJARS_PASSWORD")}}})))
