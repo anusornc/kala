@@ -207,10 +207,13 @@
 
 (def raw-frame-kinds
   "Reply-level protocol kinds: raised by the wire layer itself, so they are
-  asserted on raw frames rather than through the client."
+  asserted on raw frames rather than through the client. :protocol/bad-frame
+  is also reachable naturally — a client value that pr-str's to an EDN tag
+  the transactor cannot read (a RemoteDb riding :args) hits it too."
   {:protocol/version-mismatch [:server-version :client-version]
    :protocol/connect-required [:op]
-   :transactor/unknown-op [:op]})
+   :transactor/unknown-op [:op]
+   :protocol/bad-frame []})
 
 (deftest error-data-parity-between-peer-and-client
   (let [t (start-transactor!)
@@ -254,6 +257,13 @@
 (defn- frame-keys [reply]
   (sort (disj (into #{} (keys reply)) :status :error :message)))
 
+(defn- write-raw-frame! [^java.io.OutputStream out ^String s]
+  (let [bytes (.getBytes s "UTF-8")]
+    (doto (java.io.DataOutputStream. out)
+      (.writeInt (alength bytes))
+      (.write bytes))
+    (.flush out)))
+
 (deftest protocol-error-kinds-carry-their-keys-on-raw-frames
   (let [t (start-transactor!)]
     (try
@@ -283,6 +293,44 @@
               (is (= :transactor/unknown-op (:error reply)))
               (is (= [:op] (frame-keys reply))))
             (finally (.close sock)))))
+      (testing "an unparseable frame gets a structured reply, then the connection closes (#32)"
+        (let [{:keys [sock in out]} (raw-socket! t)]
+          (try
+            (wire/write-msg out {:op :connect :protocol-version wire/protocol-version})
+            (is (= :ok (:status (wire/read-msg in))))
+            (write-raw-frame! out "{:op :q :args [#kala.no/Such {}]}")
+            (let [reply (wire/read-msg in)]
+              (is (= :protocol/bad-frame (:error reply)))
+              (is (= [] (frame-keys reply)))
+              (is (.contains (:message reply) "kala.no/Such")))
+            (testing "the connection is closed after the bad-frame reply"
+              (is (nil? (wire/read-msg in))))
+            (finally (.close sock)))))
+      (finally
+        ((:stop! t))))))
+
+(deftest a-client-sent-bad-frame-gets-a-fail-frame-not-a-bare-eof
+  ;; the original poison (#32): a RemoteDb rides :args, pr-str emits an
+  ;; #kala.client.RemoteDb tag, and the connection used to close with no
+  ;; reply at all — the client saw a bare EOF framed as :client/error
+  (let [t (start-transactor!)
+        conn (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+    (try
+      (define! conn "n" :person/name :db.type/string)
+      (let [db (api/db conn)]
+        (try (api/q '[:find ?x :in $ ?db :where [?x :person/name _]] db db)
+             (is false "expected ex-info")
+             (catch clojure.lang.ExceptionInfo e
+               ;; the reply's :message is the reader error itself (the walk
+               ;; in the codec dissolves the record, so the first unreadable
+               ;; tag is #object) — not the generic "Client request failed"
+               (is (= :protocol/bad-frame (:kala/error (ex-data e))))
+               (is (.startsWith (ex-message e) "No reader function for tag")))))
+      (testing "only that connection dies — the transactor takes a fresh one"
+        (let [conn2 (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+          (try
+            (is (int? (api/entid (api/db conn2) :person/name)))
+            (finally (client/close conn2)))))
       (finally
         ((:stop! t))))))
 

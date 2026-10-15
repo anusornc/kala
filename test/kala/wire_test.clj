@@ -20,6 +20,18 @@
       (f))
     (str sw)))
 
+(defn- write-raw-frame! [^java.io.OutputStream out ^String s]
+  (let [bytes (.getBytes s "UTF-8")]
+    (doto (DataOutputStream. out)
+      (.writeInt (alength bytes))
+      (.write bytes))
+    (.flush out)))
+
+(defn- read-raw [^String s]
+  (let [baos (ByteArrayOutputStream.)]
+    (write-raw-frame! baos s)
+    (wire/read-msg (DataInputStream. (ByteArrayInputStream. (.toByteArray baos))))))
+
 (deftest messages-round-trip
   (testing "plain EDN message"
     (is (= {:op :transact :tx-data [[:db/add 1 :a 2]]}
@@ -31,6 +43,26 @@
   (testing "read-msg/write-msg never print — every frame, both ends"
     (is (zero? (count (captured-stdout #(round-trip {:op :echo :x 1})))))
     (is (zero? (count (captured-stdout #(round-trip {:big (vec (repeat 300 "x"))})))))))
+
+;; ---- unparseable frames (#32) ---------------------------------------------------
+
+(deftest unparseable-frames-raise-carrying-the-frame
+  (testing "an unknown reader tag raises ex-info carrying the raw frame"
+    (let [e (try (read-raw "{:op :q :args [#kala.no/Such {}]}") nil
+                 (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? e))
+      (is (.contains (ex-message e) "Unparseable"))
+      (is (= "{:op :q :args [#kala.no/Such {}]}" (:frame (ex-data e))))
+      (is (.contains (ex-message (ex-cause e)) "kala.no/Such"))))
+  (testing "invalid EDN syntax raises the same way"
+    (is (thrown? clojure.lang.ExceptionInfo (read-raw "{:op :q"))))
+  (testing "clean EOF and truncated frames still read as nil"
+    (is (nil? (wire/read-msg (DataInputStream. (ByteArrayInputStream. (byte-array 0))))))
+    (let [baos (ByteArrayOutputStream.)
+          dos (DataOutputStream. baos)]
+      (.writeInt dos 10)
+      (.write dos (.getBytes "abcd" "UTF-8"))
+      (is (nil? (wire/read-msg (DataInputStream. (ByteArrayInputStream. (.toByteArray baos)))))))))
 
 ;; ---- op table -----------------------------------------------------------------
 

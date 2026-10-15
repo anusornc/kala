@@ -77,6 +77,7 @@
 (def error-data-keys
   {:protocol/version-mismatch [:server-version :client-version]
    :protocol/connect-required [:op]
+   :protocol/bad-frame []
    :transactor/unknown-op [:op]
    :connect/missing-path []
    :connect/unknown-storage [:storage]
@@ -159,7 +160,10 @@
 
 (defn read-msg
   "One message from the stream, or nil at EOF — clean or mid-frame
-  (a truncated frame never decodes)."
+  (a truncated frame never decodes). A frame that arrived whole but
+  cannot be read as EDN throws ex-info carrying {:frame <raw text>}
+  with the reader error as cause (#32) — the transactor turns that
+  into a :protocol/bad-frame reply and closes the connection."
   [in]
   (let [dis (DataInputStream. in)]
     (try
@@ -175,10 +179,13 @@
                          len))]
             (when (= read len)
               (let [frame (String. buf StandardCharsets/UTF_8)]
-                (edn/read-string {:readers {'dos/b64 b64-decode
-                                            'dos/float float
-                                            'dos/uri to-uri}}
-                                 frame))))))
+                (try
+                  (edn/read-string {:readers {'dos/b64 b64-decode
+                                              'dos/float float
+                                              'dos/uri to-uri}}
+                                   frame)
+                  (catch Exception e
+                    (throw (ex-info "Unparseable frame" {:frame frame} e)))))))))
       (catch java.io.EOFException _ nil)
       (catch java.net.SocketException _ nil))))
 

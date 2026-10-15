@@ -9,7 +9,9 @@ The transactor speaks a request/reply protocol over TCP. Version 1.
 - Messages are maps. Values round-trip through EDN: `#inst` and `#uuid` use
   the default EDN readers; byte arrays travel as `#dos/b64 "<base64>"`.
 - A clean stream EOF ends the connection. Errors are *replies*, not stream
-  conditions.
+  conditions. A frame that arrives whole but cannot be read as EDN is
+  refused with a `:protocol/bad-frame` reply (no data keys — the reader
+  error rides `:message`) and the server closes the connection.
 
 ## Handshake
 
@@ -54,8 +56,8 @@ recent speculative values; nothing is committed.
 Error kinds are the engine's typed kinds (`:transact/unique-conflict`,
 `:transact/cas-failed`, `:transact/bad-value-type`,
 `:query/unknown-attribute`, `:protocol/version-mismatch`,
-`:transactor/error`, ...). Writes that fail leave the database untouched;
-clients may retry safely.
+`:protocol/bad-frame`, `:transactor/error`, ...). Writes that fail leave
+the database untouched; clients may retry safely.
 
 ## Notifications
 

@@ -126,6 +126,16 @@
     (catch Exception e
       (fail :transactor/error (.getMessage e) {}))))
 
+;; a frame that arrived whole but cannot be read as EDN is refused with a
+;; structured reply before the connection closes — the client sees the
+;; reader error, not a bare EOF (#32). The frame's :op is unknowable (the
+;; canonical poison — a record that pr-str's to an unknown tag — embeds
+;; #object prints no EDN reader can pass), so the kind carries no data keys.
+(defn- bad-frame-reply [e]
+  (fail :protocol/bad-frame
+        (or (ex-message (ex-cause e)) (ex-message e) "Unparseable request frame")
+        {}))
+
 (defn- handle-connection [state lock sock]
   ;; the protocol requires :connect as the first message on every connection;
   ;; a version mismatch gets its structured error and the connection closes.
@@ -136,7 +146,11 @@
       (let [in (.getInputStream s)
             out (.getOutputStream s)]
         (loop [handshaked? false]
-          (when-some [msg (wire/read-msg in)]
+          (when-some [msg (try
+                            (wire/read-msg in)
+                            (catch clojure.lang.ExceptionInfo e
+                              (wire/write-msg out (bad-frame-reply e))
+                              nil))]
             (let [first-msg? (not handshaked?)
                   reply (cond
                           (and first-msg? (not= :connect (:op msg)))
