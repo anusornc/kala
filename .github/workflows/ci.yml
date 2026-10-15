@@ -51,5 +51,8 @@ jobs:
           cat bench-smoke.txt
           grep -q "MATCH across 3 engines" bench-smoke.txt
 
+      - name: Web demo E2E (boots the server, drives every endpoint over HTTP)
+        run: web/e2e.sh
+
       - name: Release jar (bench deps must stay out)
         run: clojure -T:build jar
