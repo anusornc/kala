@@ -10,16 +10,19 @@
   final section times the same peer engine on durable file storage against
   memory — the durability cost.
 
-  Run:         clojure -M:bench            (200 and 2000 entities)
-  Custom size: clojure -M:bench 5000
+  Run:              clojure -M:bench              (core suite: kala, DataScript, Datahike)
+  Datomic suite:    clojure -M:bench --suite=datomic  (kala, DataScript, original Datomic)
+  Custom size:      clojure -M:bench 5000 20000
 
   Engines are pluggable maps ({:name :setup :transact-batch :q
-  :datoms-count}). Dependencies (datascript, com.datomic/peer)
-  live under the :bench alias only — the release jar is unchanged."
+  :datoms-count}); engine namespaces load lazily per suite because
+  Datahike's and com.datomic/peer's data_readers.clj both claim the
+  db/id and db/fn tags — the two jars cannot share a classpath (the JVM
+  refuses to boot). Dependencies live under the :bench and
+  :bench-datomic aliases only — the release jar is unchanged."
   (:require [clojure.string :as str]
             [datascript.core :as d]
-            [kala.api :as api]
-            [kala.bench.datomic-peer :as peer]))
+            [kala.api :as api]))
 
 (def ^:private batch-size 200)
 (def ^:private friend-batch-size 500)
@@ -186,9 +189,9 @@
 (defn run-bench
   "Run the full suite for n entities across all engines; prints a results
   table."
-  [n]
+  [engines n]
   (println (str "\n=== benchmark: " n " entities, all engines, memory storage ===\n"))
-  (let [engines [(os-engine) (ds-engine) (peer/engine schema-tx)]
+  (let [engines engines
         results (mapv (fn [engine]
                         (println (str "- " (:name engine)))
                         (let [conn ((:setup engine))
@@ -280,8 +283,28 @@
           args)
     [200 2000]))
 
+;; Two suites, never one classpath: Datahike's and com.datomic/peer's
+;; data_readers.clj both claim the db/id and db/fn tags, so the JVM refuses
+;; to boot with both jars present. Each suite resolves its third engine
+;; lazily, so only that suite's dependency is ever loaded.
+(def ^:private suites
+  {"core"    (fn []
+               [(os-engine)
+                (ds-engine)
+                ((requiring-resolve 'kala.bench.datahike-engine/engine))])
+   "datomic" (fn []
+               [(os-engine)
+                (ds-engine)
+                ((requiring-resolve 'kala.bench.datomic-peer/engine) schema-tx)])})
+
 (defn -main [& args]
-  (doseq [n (parse-sizes args)]
-    (run-bench n))
+  (let [suite (or (some #(second (re-matches #"--suite=(.+)" %)) args) "core")
+        build (or (get suites suite)
+                  (throw (ex-info (str "Unknown suite: " suite)
+                                  {:bench/unknown-suite suite
+                                   :bench/suites (vec (keys suites))})))
+        sizes (parse-sizes (remove #(re-matches #"--suite=.*" %) args))]
+    (doseq [n sizes]
+      (run-bench (build) n)))
   (System/exit 0))
 

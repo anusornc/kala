@@ -13,6 +13,14 @@
   :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
           :ns-default build}
   :bench {:extra-paths ["bench"]
-          :extra-deps {datascript/datascript {:mvn/version "1.7.4"}
-                       com.datomic/peer {:mvn/version "1.0.7387"}}
-          :main-opts ["-m" "kala.bench"]}}}
+          :extra-deps {datascript/datascript {:mvn/version "1.7.4"
+                                              ;; datahike forks pss under io.replikativ and
+                                              ;; needs its 3-arg replace; one pss jar only
+                                              :exclusions [persistent-sorted-set/persistent-sorted-set]}
+                       io.replikativ/datahike {:mvn/version "0.7.1624"}
+                       io.replikativ/persistent-sorted-set {:mvn/version "0.3.116"}}
+          :main-opts ["-m" "kala.bench"]}
+  :bench-datomic {:extra-paths ["bench"]
+                  :extra-deps {datascript/datascript {:mvn/version "1.7.4"}
+                               com.datomic/peer {:mvn/version "1.0.7387"}}
+                  :main-opts ["-m" "kala.bench"]}}}

@@ -45,11 +45,13 @@ jobs:
       - name: Test matrix (peer + client x memory + file)
         run: clojure -M:test
 
-      - name: "Bench smoke (n=200) — gate: MATCH across 3 engines"
+      - name: "Bench smoke (n=200) — gate: MATCH across 3 engines, both suites"
         run: |
           clojure -M:bench 200 > bench-smoke.txt 2>&1 || { cat bench-smoke.txt; exit 1; }
-          cat bench-smoke.txt
+          clojure -M:bench-datomic --suite=datomic 200 > bench-smoke-datomic.txt 2>&1 || { cat bench-smoke-datomic.txt; exit 1; }
+          cat bench-smoke.txt bench-smoke-datomic.txt
           grep -q "MATCH across 3 engines" bench-smoke.txt
+          grep -q "MATCH across 3 engines" bench-smoke-datomic.txt
 
       - name: Web demo E2E (boots the server, drives every endpoint over HTTP)
         run: web/e2e.sh

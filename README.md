@@ -58,14 +58,17 @@ documented no-sandboxing posture as ADR-0004).
 ## Benchmark
 
 ```bash
-clojure -M:bench                # 200 and 2000 entities
-clojure -M:bench 5000 20000     # custom entity counts
+clojure -M:bench                          # core suite: kala, DataScript, Datahike
+clojure -M:bench-datomic --suite=datomic  # Datomic suite: kala, DataScript, original Datomic
+clojure -M:bench 5000 20000               # custom entity counts
 ```
 
-Runs our peer engine, DataScript, and original Datomic (com.datomic/peer,
-embedded via datomic:mem) on identical seed data, cross-checks that all
-engines return the same query results, then prints latency tables.
-Dependencies (datascript, com.datomic/peer) are bench-only.
+Two suites, never one classpath: Datahike's and com.datomic/peer's
+data_readers.clj both claim the `db/id` and `db/fn` tags, so the JVM
+refuses to boot with both jars present. Both suites cross-check that
+kala, DataScript, and the third engine return identical query results,
+then print latency tables. Dependencies (datascript, datahike,
+com.datomic/peer) are bench-only.
 
 Latency rows report the mean plus p50/p95/p99 of **per-operation** times:
 after a warmup, every call is timed with `System/nanoTime` — GC pauses land
@@ -83,7 +86,9 @@ transactions. The datoms-in-store totals include engine-internal
 bookkeeping (schema and transaction datoms), so they differ by engine; the
 cross-check compares query results, not totals. The Datomic engine is
 peer-only; its API deviations from the other engines are recorded in
-[bench/kala/bench/datomic_peer.clj](bench/kala/bench/datomic_peer.clj).
+[bench/kala/bench/datomic_peer.clj](bench/kala/bench/datomic_peer.clj), the
+Datahike engine's in
+[bench/kala/bench/datahike_engine.clj](bench/kala/bench/datahike_engine.clj).
 
 ## Launch a transactor
 
