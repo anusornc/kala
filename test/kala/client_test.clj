@@ -1,14 +1,16 @@
 (ns kala.client-test
   "Client-mode coverage the peer-only suites cannot provide: the full
   time-travel surface over the wire, transaction-completion notifications,
-  the explicit peer-only boundary, and error-data parity across the wire."
+  the explicit peer-only boundary, error-data parity across the wire, and
+  the wire's refusal discipline — an unparseable frame gets a structured
+  :protocol/bad-frame reply before the connection closes (#32)."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
             [kala.client :as client]
             [kala.storage :as storage]
             [kala.storage.memory :as memory]
             [kala.transactor :as tx]
-            [kala.test-util :refer [define! install-tx-fn!]]
+            [kala.test-util :refer [define! install-tx-fn! write-raw-frame!]]
             [kala.wire :as wire]))
 
 (defn- tmp-dir []
@@ -256,13 +258,6 @@
 
 (defn- frame-keys [reply]
   (sort (disj (into #{} (keys reply)) :status :error :message)))
-
-(defn- write-raw-frame! [^java.io.OutputStream out ^String s]
-  (let [bytes (.getBytes s "UTF-8")]
-    (doto (java.io.DataOutputStream. out)
-      (.writeInt (alength bytes))
-      (.write bytes))
-    (.flush out)))
 
 (deftest protocol-error-kinds-carry-their-keys-on-raw-frames
   (let [t (start-transactor!)]

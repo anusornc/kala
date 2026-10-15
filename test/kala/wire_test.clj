@@ -3,9 +3,11 @@
   echo on every read/write was debug residue in the highest-traffic seam
   (#20). Also the protocol's op table: the single source the connection
   loop, handle-op, the client, and docs/wire-protocol.md all agree on
-  (#26)."
+  (#26); and unparseable frames, which raise ex-info carrying the raw
+  frame so the transactor can refuse them with :protocol/bad-frame (#32)."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [kala.test-util :refer [write-raw-frame!]]
             [kala.wire :as wire])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream DataInputStream DataOutputStream]))
 
@@ -19,13 +21,6 @@
     (binding [*out* sw]
       (f))
     (str sw)))
-
-(defn- write-raw-frame! [^java.io.OutputStream out ^String s]
-  (let [bytes (.getBytes s "UTF-8")]
-    (doto (DataOutputStream. out)
-      (.writeInt (alength bytes))
-      (.write bytes))
-    (.flush out)))
 
 (defn- read-raw [^String s]
   (let [baos (ByteArrayOutputStream.)]
@@ -58,6 +53,8 @@
     (is (thrown? clojure.lang.ExceptionInfo (read-raw "{:op :q"))))
   (testing "clean EOF and truncated frames still read as nil"
     (is (nil? (wire/read-msg (DataInputStream. (ByteArrayInputStream. (byte-array 0))))))
+    ;; the length lies here — ten bytes claimed, four sent — which is
+    ;; exactly what write-raw-frame! (honest framing) cannot express
     (let [baos (ByteArrayOutputStream.)
           dos (DataOutputStream. baos)]
       (.writeInt dos 10)

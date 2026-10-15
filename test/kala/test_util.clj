@@ -50,6 +50,16 @@
   (api/transact conn [[:db/add "fn" :db/ident ident]
                       [:db/add "fn" :db/fn source]]))
 
+(defn write-raw-frame!
+  "Write one length-prefixed wire frame whose payload is the literal string
+  s — for tests that need frames the EDN reader cannot parse."
+  [^java.io.OutputStream out ^String s]
+  (let [bytes (.getBytes s "UTF-8")]
+    (doto (java.io.DataOutputStream. out)
+      (.writeInt (alength bytes))
+      (.write bytes))
+    (.flush out)))
+
 (defmacro assert-error [kind & body]
   `(try ~@body
         (is false ~(str "expected ex-info " kind))
