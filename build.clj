@@ -43,3 +43,12 @@
   (jar nil)
   (b/install {:basis basis :lib lib :version version :jar-file jar-file :class-dir class-dir})
   (println "Installed" lib version))
+
+(defn deploy [_]
+  ;; credentials come from the environment: deps-deploy reads
+  ;; CLOJARS_USERNAME and CLOJARS_PASSWORD (a Clojars deploy token)
+  (jar nil)
+  (println "Deploying" jar-file "to Clojars as" lib version)
+  ((requiring-resolve 'deps-deploy.deps-deploy/deploy)
+   {:artifact jar-file
+    :repository "clojars"}))
