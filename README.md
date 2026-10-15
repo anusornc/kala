@@ -64,19 +64,25 @@ clojure -M:bench 5000 20000     # custom entity counts
 
 Runs our peer engine, DataScript, and original Datomic (com.datomic/peer,
 embedded via datomic:mem) on identical seed data, cross-checks that all
-engines return the same query results, then prints ingest and query
-latencies. Dependencies (criterium, datascript, com.datomic/peer) are
-bench-only.
+engines return the same query results, then prints latency tables.
+Dependencies (datascript, com.datomic/peer) are bench-only.
 
-Methodology: query latencies are steady-state — criterium warms up, and the
-pre-timing cross-check warms each engine's first-touch code paths. Engine
-setup (connection, schema transact — noticeable for original Datomic's peer
-startup) happens before any timing and is excluded from every number. Ingest
-is cold single-pass wall clock over batched transactions. The datoms-in-store
-totals include engine-internal bookkeeping (schema and transaction datoms),
-so they differ by engine; the cross-check compares query results, not totals.
-The Datomic engine is peer-only; its API deviations from the other engines
-are recorded in
+Latency rows report the mean plus p50/p95/p99 of **per-operation** times:
+after a warmup, every call is timed with `System/nanoTime` — GC pauses land
+in p95/p99, which is honest for a database. Workloads: bulk ingest and 100
+single-entity updates as wall clock, plus three read shapes (simple
+pattern, filtered + input, join) and a point read. The final section times
+the same peer engine on durable **file storage** against memory — the
+durability cost: reads are comparable (indexes are rebuilt in memory),
+writes pay the fsync-before-ack.
+
+Methodology: engine setup (connection, schema transact — noticeable for
+original Datomic's peer startup) happens before any timing and is excluded
+from every number. Ingest is cold single-pass wall clock over batched
+transactions. The datoms-in-store totals include engine-internal
+bookkeeping (schema and transaction datoms), so they differ by engine; the
+cross-check compares query results, not totals. The Datomic engine is
+peer-only; its API deviations from the other engines are recorded in
 [bench/kala/bench/datomic_peer.clj](bench/kala/bench/datomic_peer.clj).
 
 ## Launch a transactor

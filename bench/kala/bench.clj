@@ -3,15 +3,20 @@
   comparisons, run against identical seed data and identical workloads.
   Before timing, all engines answer the same queries and the result sets are
   cross-checked — the harness doubles as an engine-correctness cross-check.
+  Latency rows report the mean plus p50/p95/p99 of per-operation times
+  (warmup, then every call timed with nanoTime — GC pauses included, which
+  is honest for a database); an update workload (100 single-entity
+  transactions) and a point read sit beside the three query shapes; and a
+  final section times the same peer engine on durable file storage against
+  memory — the durability cost.
 
   Run:         clojure -M:bench            (200 and 2000 entities)
   Custom size: clojure -M:bench 5000
 
   Engines are pluggable maps ({:name :setup :transact-batch :q
-  :datoms-count}). Dependencies (criterium, datascript, com.datomic/peer)
+  :datoms-count}). Dependencies (datascript, com.datomic/peer)
   live under the :bench alias only — the release jar is unchanged."
   (:require [clojure.string :as str]
-            [criterium.core :as crit]
             [datascript.core :as d]
             [kala.api :as api]
             [kala.bench.datomic-peer :as peer]))
@@ -35,6 +40,7 @@
 (def ^:private q-all '[:find ?n :where [_ :person/name ?n]])
 (def ^:private q-filtered '[:find ?p :in $ ?age :where [?p :person/age ?age]])
 (def ^:private q-join '[:find ?n :where [?p :person/friend ?f] [?f :person/name ?n]])
+(def ^:private q-point '[:find ?a :in $ ?e :where [?e :person/age ?a]])
 
 ;; ---- engines -----------------------------------------------------------------
 
@@ -42,6 +48,19 @@
   {:name "kala (peer, memory)"
    :setup (fn []
             (let [conn (api/connect {:storage :memory :name "bench"})]
+              (api/transact conn schema-tx)
+              conn))
+   :transact-batch (fn [conn batch] (api/transact conn batch))
+   :q (fn [conn query & args] (apply api/q query (api/db conn) args))
+   :datoms-count (fn [conn] (count (api/datoms (api/db conn) :eavt [])))})
+
+(defn- file-engine []
+  {:name "kala (peer, file)"
+   :dir (str (java.nio.file.Files/createTempDirectory
+              (str "kala-bench-file-" (java.util.UUID/randomUUID))
+              (make-array java.nio.file.attribute.FileAttribute 0)))
+   :setup (fn [dir]
+            (let [conn (api/connect {:storage :file :path dir})]
               (api/transact conn schema-tx)
               conn))
    :transact-batch (fn [conn batch] (api/transact conn batch))
@@ -112,6 +131,56 @@
      :age-count (count (q conn q-filtered 30))
      :join (set (q conn q-join))}))
 
+;; ---- latency and update workloads -------------------------------------------------
+
+(defn- percentile
+  "The p-quantile of pre-sorted samples (seconds)."
+  [sorted p]
+  (nth sorted (min (dec (count sorted))
+                   (long (* p (count sorted))))))
+
+(defn- wall-row
+  "One markdown row for a single-pass wall-clock figure (ingest, updates):
+  no distribution, so the percentile columns print dashes."
+  [label engine-name secs]
+  (println (str "| " label " | " engine-name " | " (fmt-time secs) " | - | - | - |")))
+
+(def ^:private query-warmup 50)
+(def ^:private query-iterations 300)
+
+(defn- latency-row
+  "One markdown latency row from a per-op sample distribution in seconds."
+  [label engine-name {:keys [mean samples]}]
+  (let [p (fn [q] (if (seq samples) (fmt-time (percentile samples q)) "-"))]
+    (println (str "| " label " | " engine-name " | " (fmt-time mean)
+                  " | " (p 0.50) " | " (p 0.95) " | " (p 0.99) " |"))))
+
+(defn- bench-query
+  "Per-operation latency distribution for one query shape: warm up, then
+  time every call with nanoTime; returns the sorted samples (seconds) and
+  their mean — honest percentiles, garbage-collection pauses included."
+  [engine conn query args]
+  (dotimes [_ query-warmup]
+    (apply (:q engine) conn query args))
+  (let [samples (sort (map (fn [_]
+                             (let [t0 (System/nanoTime)]
+                               (doall (apply (:q engine) conn query args))
+                               (/ (- (System/nanoTime) t0) 1e9)))
+                           (range query-iterations)))]
+    {:mean (/ (reduce + samples) (count samples))
+     :samples samples}))
+
+(defn- update-workload
+  "100 single-entity transactions through the engine's own transact path;
+  wall clock. e0's age ends at 100 — identical across engines, so the
+  workload must run AFTER any cross-check that counts age values."
+  [engine conn eids]
+  (let [target (get eids "e0")]
+    (timed-seconds
+     (fn []
+       (dotimes [i 100]
+         ((:transact-batch engine) conn [[:db/add target :person/age (inc i)]]))))))
+
 ;; ---- runner ---------------------------------------------------------------------
 
 (defn run-bench
@@ -138,7 +207,7 @@
                           (doseq [batch (friend-batches n eids)]
                             ((:transact-batch engine) conn batch))
                           (println (str "  datoms in store: " ((:datoms-count engine) conn)))
-                          {:engine engine :conn conn :ingest-secs ingest-secs}))
+                          {:engine engine :conn conn :ingest-secs ingest-secs :eids eids}))
                       engines)
         checks (mapv (fn [{:keys [engine conn]}] (cross-check engine conn)) results)
         ;; the first engine is the reference; any other engine whose
@@ -152,16 +221,55 @@
                     (str "DIVERGE for " (str/join ", " diverging) " — timings below are meaningless")
                     (str "MATCH across " (count engines)
                          " engines (reference: " (:name (first engines)) ")"))))
-    (println "\n| benchmark | engine | mean / total |")
-    (println "|---|---|---|")
-    (doseq [{:keys [engine conn ingest-secs]} results]
-      (println (str "| bulk ingest | " (:name engine) " | " (fmt-time ingest-secs) " |"))
-      (doseq [[label query args] [["simple pattern" q-all []]
-                                  ["filtered + input" q-filtered [30]]
-                                  ["join (friend -> name)" q-join []]]]
-        (let [stats (crit/quick-benchmark (doall (apply (:q engine) conn query args)) {})
-              mean (first (:mean stats))]
-          (println (str "| " label " | " (:name engine) " | " (fmt-time mean) " |")))))))
+    (println "\n| benchmark | engine | mean / total | p50 | p95 | p99 |")
+    (println "|---|---|---|---|---|---|")
+    (doseq [{:keys [engine conn ingest-secs eids]} results]
+      (wall-row "bulk ingest" (:name engine) ingest-secs)
+      (wall-row "100 updates (single-entity txs)" (:name engine)
+                   (update-workload engine conn eids))
+      (let [target (get eids "e0")]
+        (doseq [[label query args] [["simple pattern" q-all []]
+                                    ["filtered + input" q-filtered [30]]
+                                    ["join (friend -> name)" q-join []]
+                                    ["point read (entity -> age)" q-point [target]]]]
+          (latency-row label (:name engine) (bench-query engine conn query args)))))
+
+    ;; ---- storage cost: the same peer engine on durable file storage -------
+    (println (str "\n=== storage cost: " n " entities, :file vs :memory ===\n"))
+    (let [file (file-engine)
+          _ (println (str "- " (:name file)))
+          conn ((:setup file) (:dir file))
+          eids-atom (atom {})
+          ingest-secs (timed-seconds
+                       (fn []
+                         (loop [[batch & more] (seq (person-batches n))]
+                           (when batch
+                             (swap! eids-atom collect-tempids
+                                    (:tempids ((:transact-batch file) conn batch)))
+                             (recur more)))))
+          eids @eids-atom
+          _ (doseq [batch (friend-batches n eids)]
+              ((:transact-batch file) conn batch))
+          ;; parity BEFORE the update workload mutates e0's age
+          check (cross-check file conn)]
+      (println (str "  datoms in store: " ((:datoms-count file) conn)))
+      (println (str "  parity vs the memory engine: "
+                    (if (= check reference)
+                      "same results"
+                      "DIVERGE — see the engine cross-check above")))
+      (println "")
+      (println "| benchmark | engine | mean / total | p50 | p95 | p99 |")
+      (println "|---|---|---|---|---|---|")
+      (wall-row "bulk ingest" (:name file) ingest-secs)
+      (wall-row "100 updates (single-entity txs)" (:name file)
+                   (update-workload file conn eids))
+      (let [target (get eids "e0")]
+        (doseq [[label query args] [["simple pattern" q-all []]
+                                    ["filtered + input" q-filtered [30]]
+                                    ["join (friend -> name)" q-join []]
+                                    ["point read (entity -> age)" q-point [target]]]]
+          (latency-row label (:name file) (bench-query file conn query args))))
+      (println ""))))
 
 (defn- parse-sizes [args]
   (if (seq args)
