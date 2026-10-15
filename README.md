@@ -126,6 +126,23 @@ project/web E2E journeys on every push and PR.
 | client | Remote library: same operation surface, served through the transactor |
 | wire-protocol | Open, versioned, EDN-over-TCP protocol between peers/clients and the transactor |
 
+## Constraints (v1, by design)
+
+Kala's production bar is the embedded library — an application opens a peer
+in its own process ([ADR-0005](docs/adr/0005-production-bar-is-the-embedded-library.md)).
+What that deliberately does not include:
+
+- **RAM-bound stores** — a file store replays its whole log into in-memory
+  indexes at boot; there is no compaction in v1, so a store's size is the
+  machine's memory.
+- **Single writer, single node** — one transactor serializes all writes;
+  no replication or HA.
+- **No transport security** — the wire protocol carries no authentication
+  or TLS; bind the transactor to 127.0.0.1 or a trusted network.
+- **No query sandboxing** — queries and transaction functions run with the
+  embedding process's full privileges (the documented trust posture of
+  [ADR-0004](docs/adr/0004-transaction-functions-are-stored-edn-source.md)).
+
 ## License
 
 [EPL-1.0](LICENSE) — the same license Nubank chose for Datomic itself and the Clojure ecosystem standard.
