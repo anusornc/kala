@@ -182,11 +182,16 @@
     2 [(clause 0) (clause 1) '_]
     (core/err :query/bad-clause "Patterns must have 2 or 3 elements" {:clause clause})))
 
+;; One raise for an unresolvable ident constant, whichever slot it sits in —
+;; the :v slot's rule since resolve-constant, the :e slot's since #34.
+(defn- require-entid [db x what]
+  (or (core/entid db x)
+      (core/err :query/unknown-ident what {:ident x})))
+
 (defn- resolve-constant [db attr v]
   ;; keyword constants in ref position resolve to entity ids (error if unknown)
   (if (and v (keyword? v) (:ref? attr) (not (:any? attr)))
-    (or (core/entid db v)
-        (core/err :query/unknown-ident "Unknown ident in value position" {:ident v}))
+    (require-entid db v "Unknown ident in value position")
     v))
 
 (defn- prep-pattern [db clause]
@@ -194,12 +199,11 @@
         attr (resolve-attr db a)
         v (resolve-constant db attr v)
         ;; a forward pattern's :e constant is the same entity reference form
-        ;; the other read doors take: a keyword resolves through entid,
-        ;; raising :query/unknown-ident when unresolvable (#34). A reverse
-        ;; pattern's entity ref rides the :v slot, already resolved above.
+        ;; the other read doors take: a keyword resolves through entid (#34).
+        ;; A reverse pattern's entity ref rides the :v slot, already resolved
+        ;; above.
         e (if (and (not (:reverse attr)) (keyword? e))
-            (or (core/entid db e)
-                (core/err :query/unknown-ident "Unknown ident in entity position" {:ident e}))
+            (require-entid db e "Unknown ident in entity position")
             e)]
     (if (:reverse attr)
       [v (:id attr) e]

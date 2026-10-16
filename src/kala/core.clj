@@ -215,10 +215,11 @@
       (get (::schema-by-id db) ident-or-id)))
 
 (defn require-attr
-  "The attribute's schema map, raising kind when unresolvable — the one
-  \"resolve attribute or raise\" shape every door shares. The kind stays
-  the door's choice (:transact/unknown-attribute on the write path, the
-  door's own kind on reads), so raising it changes no observable kind."
+  "The attribute's schema map (by ident or attr id — lookup-attr's rule),
+  raising kind when unresolvable — the one \"resolve attribute or raise\"
+  shape every read door shares. The kind is the door's choice, so raising
+  it changes no observable kind — which is also why two read doors (entity
+  reverse, datoms) deliberately keep :transact/unknown-attribute here."
   [db x kind]
   (or (lookup-attr db x)
       (err kind "Unknown attribute" {:attribute x})))

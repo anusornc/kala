@@ -34,6 +34,10 @@ _Avoid_: eid space, id prefix
 The entity created for each transaction, carrying :db/txInstant.
 _Avoid_: tx metadata, epoch
 
+**read door**:
+One of the read entry points over db values — datoms, seek-datoms, pull, entity navigation, query patterns. Every read door resolves entity references the same way: a keyword through the registry's ident map, an integer as itself.
+_Avoid_: accessor, surface
+
 ### Schema
 
 **attribute**:
