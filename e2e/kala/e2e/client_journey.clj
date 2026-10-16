@@ -27,7 +27,7 @@
 ;; world exactly before the cas changed alice's age.
 
 (defn- connect! [host port]
-  (client/connect {:host host :port (parse-long port) :name "e2e"}))
+  (client/connect {:host host :port (parse-long port)}))
 
 (defn- define! [conn ident vt card]
   (api/transact conn [[:db/add (name ident) :db/ident ident]

@@ -50,7 +50,7 @@
 (defn- os-engine []
   {:name "kala (peer, memory)"
    :setup (fn []
-            (let [conn (api/connect {:storage :memory :name "bench"})]
+            (let [conn (api/connect {:storage :memory})]
               (api/transact conn schema-tx)
               conn))
    :transact-batch (fn [conn batch] (api/transact conn batch))

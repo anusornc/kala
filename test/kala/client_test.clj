@@ -26,7 +26,7 @@
 
 (deftest time-travel-over-the-wire
   (let [t (start-transactor!)
-        conn (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+        conn (client/connect {:host "127.0.0.1" :port (:port t)})]
     (try
       (define! conn "n" :person/name :db.type/string)
       (define! conn "a" :person/age :db.type/long)
@@ -62,7 +62,7 @@
 
 (deftest notifications-push-tx-completions
   (let [t (start-transactor!)
-        conn (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+        conn (client/connect {:host "127.0.0.1" :port (:port t)})]
     ;; schema goes in before the listener subscribes, so the expected push
     ;; set is deterministic
     (define! conn "n" :person/name :db.type/string)
@@ -83,7 +83,7 @@
 
 (deftest peer-only-operations-are-rejected-explicitly-in-client-mode
   (let [t (start-transactor!)
-        conn (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+        conn (client/connect {:host "127.0.0.1" :port (:port t)})]
     (try
       (define! conn "n" :person/name :db.type/string)
       (api/transact conn [[:db/add "a" :person/name "Alice"]])
@@ -221,8 +221,8 @@
 
 (deftest error-data-parity-between-peer-and-client
   (let [t (start-transactor!)
-        pconn (api/connect {:storage :memory :name "peer"})
-        cconn (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+        pconn (api/connect {:storage :memory})
+        cconn (client/connect {:host "127.0.0.1" :port (:port t)})]
     (try
       (load-parity-fixture! pconn)
       (load-parity-fixture! cconn)
@@ -311,7 +311,7 @@
   ;; #kala.client.RemoteDb tag, and the connection used to close with no
   ;; reply at all — the client saw a bare EOF framed as :client/error
   (let [t (start-transactor!)
-        conn (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+        conn (client/connect {:host "127.0.0.1" :port (:port t)})]
     (try
       (define! conn "n" :person/name :db.type/string)
       (let [db (api/db conn)]
@@ -324,7 +324,7 @@
                (is (= :protocol/bad-frame (:kala/error (ex-data e))))
                (is (.startsWith (ex-message e) "No reader function for tag")))))
       (testing "only that connection dies — the transactor takes a fresh one"
-        (let [conn2 (client/connect {:host "127.0.0.1" :port (:port t) :name "test"})]
+        (let [conn2 (client/connect {:host "127.0.0.1" :port (:port t)})]
           (try
             (is (int? (api/entid (api/db conn2) :person/name)))
             (finally (client/close conn2)))))
@@ -412,7 +412,7 @@
 
 (deftest pinned-kinds-carry-their-keys-where-they-are-constructible
   (testing "peer-side connect kinds never ride a reply"
-    (let [ex (try (api/connect {:storage :file :name "x"}) nil
+    (let [ex (try (api/connect {:storage :file}) nil
                   (catch clojure.lang.ExceptionInfo e e))]
       (is (= :connect/missing-path (:kala/error (ex-data ex))))
       (is (= [] (sort (disj (into #{} (keys (ex-data ex))) :kala/error)))))
@@ -439,14 +439,14 @@
                     (append-log [_ entry] (storage/append-log inner entry))
                     (log-scan [_ from-t to-t]
                       (filter #(< (:t %) 100) (storage/log-scan inner from-t to-t))))
-            conn (api/connect {:storage lying :name "stale"})
+            conn (api/connect {:storage lying})
             ex (try (api/transact conn [[:db/add "x" :db/ident :t/x]]) nil
                     (catch clojure.lang.ExceptionInfo e e))]
         (is (= :storage/non-monotonic-t (:kala/error (ex-data ex))))
         (is (= [:last-t :t] (sort (disj (into #{} (keys (ex-data ex))) :kala/error)))))))
   (testing "the client-boundary kind is :client/peer-only carrying its op"
     (let [t (start-transactor!)
-          conn (client/connect {:host "127.0.0.1" :port (:port t) :name "t"})]
+          conn (client/connect {:host "127.0.0.1" :port (:port t)})]
       (try
         (api/entity (api/db conn) 1)
         (is false "expected ex-info")

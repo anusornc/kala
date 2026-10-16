@@ -197,8 +197,3 @@
     (.writeInt dos (alength payload))
     (.write dos payload)
     (.flush dos)))
-
-(defn write-msg-str
-  "Debug helper: the exact wire payload for a message."
-  [msg]
-  (pr-str (to-edn msg)))

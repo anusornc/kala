@@ -80,9 +80,9 @@
       (refuse! sock hello))))
 
 (defn connect
-  "Connect to a running transactor: {:host \"127.0.0.1\" :port 4334 :name \"db\"}.
+  "Connect to a running transactor: {:host \"127.0.0.1\" :port 4334}.
   Performs the protocol handshake; a refusal throws."
-  [{:keys [host port name] :or {host "127.0.0.1" port 4334 name "db"}}]
+  [{:keys [host port] :or {host "127.0.0.1" port 4334}}]
   (let [sock (Socket. ^String host (int ^long port))
         c (->ClientConn sock
                         (BufferedInputStream. (.getInputStream sock))

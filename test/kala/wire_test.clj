@@ -112,8 +112,9 @@
   (map #(subs % 1 (dec (count %))) (re-seq #"`[^`]+`" cell)))
 
 ;; keyword-shaped spans inside prose that name query-language forms rather
-;; than wire fields — e.g. ":q :args (further `:in` inputs, in order)"
-(def ^:private doc-prose-spans #{":in"})
+;; than wire fields — e.g. ":q :args (the remaining `:in` inputs after `$`,
+;; in order)"
+(def ^:private doc-prose-spans #{":in" "$"})
 
 (deftest wire-protocol-doc-matches-the-op-table
   (let [doc (slurp "docs/wire-protocol.md")

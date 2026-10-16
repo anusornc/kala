@@ -122,7 +122,7 @@ project/web E2E journeys on every push and PR.
 | storage-api | Documented storage protocol: segment put/get/list + ordered log append/scan |
 | storage-memory / storage-file | v1 backends: volatile in-memory, durable local directory |
 | transactor | Standalone single-writer process; serializes and logs transactions |
-| peer | Embedded library: local indexes and queries, writes via the transactor |
+| peer | Embedded library: local indexes and queries, writes in-process through the storage log |
 | client | Remote library: same operation surface, served through the transactor |
 | wire-protocol | Open, versioned, EDN-over-TCP protocol between peers/clients and the transactor |
 

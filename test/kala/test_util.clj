@@ -26,7 +26,7 @@
                          (assoc *storage-opts* :path (unique-path))
                          *storage-opts*)
           t (tx/start! (assoc storage-opts :port 0))]
-      (client/connect {:host "127.0.0.1" :port (:port t) :name *name*}))
+      (client/connect {:host "127.0.0.1" :port (:port t)}))
     (api/connect
      (if (= :file (:storage *storage-opts*))
        (assoc *storage-opts* :path (unique-path))

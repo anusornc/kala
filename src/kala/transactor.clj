@@ -6,7 +6,6 @@
   to a t (as-of), a since view, or history when the request asks."
   (:require [clojure.edn :as edn]
             [kala.api :as api]
-            [kala.time-travel :as time-travel]
             [kala.wire :as wire])
   (:import [java.net InetAddress ServerSocket SocketException]
            [java.util.concurrent Executors]))
@@ -58,9 +57,9 @@
         (swap! listeners disj out)))))
 
 ;; One handler per op in the wire table (kala.wire/ops); handle-op dispatches
-;; by lookup, and a transactor-test pins the two key sets equal — an op added
-;; to the table without a handler (or the reverse) fails loudly.
-(def ^:private handlers
+;; by lookup, and the transactor test pins the two key sets equal — an op
+;; added to the table without a handler (or the reverse) fails loudly.
+(def handlers
   {:connect
    (fn [{:keys [conn]} msg]
      (if (= wire/protocol-version (:protocol-version msg))
@@ -86,7 +85,9 @@
 
    :with
    (fn [state msg]
-     (let [report (time-travel/db-with (db-at state msg) (:tx-data msg))
+     ;; the api dispatch — every sibling handler's shape; a server-side db
+     ;; value takes the same peer branch it always did
+     (let [report (api/with (db-at state msg) (:tx-data msg))
            db-ref (remember-speculative state (:db-after report))]
        (ok {:t (:t report)
             :db-ref db-ref
@@ -179,9 +180,9 @@
                              (= :protocol/version-mismatch (:error reply)))
                 (recur true)))))))
     (catch Exception e
-      (println :CONN-ERR (pr-str (ex-data e)) (.getMessage e))
-      (doseq [^StackTraceElement st (.getStackTrace e)]
-        (println "   " (.toString st))))))
+      ;; one line, no stack trace — the codec-silence posture wire_test
+      ;; enforces; parse failures (#32) never reach here
+      (println :CONN-ERR (pr-str (ex-data e)) (.getMessage e)))))
 
 (defn start!
   "Start a transactor. Opts: :port (0 picks an ephemeral port), :host,

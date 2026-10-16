@@ -30,11 +30,16 @@
 (defn fetch
   "The cached value for [key k, entry-key ek], building it through build
   (a thunk) on first use. Normally built once per [k ek]: concurrent first
-  touches may each build, last write wins. Stored values must be truthy —
-  a nil or false entry rebuilds on every fetch."
+  touches may each build, last write wins. A falsy build result raises —
+  a stored nil or false would rebuild on every fetch, silently."
   [cache k ek build]
   (let [a (per-key cache k)]
     (or (get @a ek)
         (let [v (build)]
+          (when-not v
+            ;; an internal invariant of kala's own caches, not a user-facing
+            ;; error kind — a falsy entry would rebuild on every fetch
+            (throw (ex-info "Weak-cache build returned a falsy value"
+                            {:entry ek})))
           (swap! a assoc ek v)
           v))))

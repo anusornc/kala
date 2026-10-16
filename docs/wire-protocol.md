@@ -31,7 +31,7 @@ error and the server closes the connection.
 | `:db` | — | `:t` (the transactor's current t) |
 | `:transact` | `:tx-data` (list-form ops and/or map-form entities) | `:t`, `:tx-data` (public datom maps), `:tempids` (incl. `:db/current-tx`) |
 | `:with` | `:tx-data`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:t`, `:db-ref`, `:tx-data`, `:tempids` |
-| `:q` | `:query` (data form or EDN string), `:args` (further `:in` inputs, in order), optional `:t` / `:since-t` / `:history` / `:db-ref` | `:rows` |
+| `:q` | `:query` (data form or EDN string), `:args` (the remaining `:in` inputs after `$`, in order), optional `:t` / `:since-t` / `:history` / `:db-ref` | `:rows` |
 | `:pull` | `:pattern`, `:eid`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:doc` |
 | `:datoms` | `:index`, `:components`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:datoms` (public datom maps) |
 | `:listen` | — | `:listening`, then push notifications (see below) |

@@ -109,7 +109,7 @@
 ;; ---- sections 3-10 -------------------------------------------------------------
 
 (defn- run-all! []
-  (let [conn (api/connect {:storage :memory :name "demo"})
+  (let [conn (api/connect {:storage :memory})
         {:keys [alice bob carol dave t0]} (seed-memory-db! conn)
         db (api/db conn)]
 
@@ -215,7 +215,7 @@
 
     (section "10. Remote client over the transactor wire")
     (let [t (tx/start! {:storage :file :path (tmp-dir! "srv") :port 0})
-          rc (client/connect {:host "127.0.0.1" :port (:port t) :name "demo"})]
+          rc (client/connect {:host "127.0.0.1" :port (:port t)})]
       (define! rc :person/name :db.type/string :db.cardinality/one)
       (api/transact rc [[:db/add "zoe" :person/name "Zoe"]])
       (let [rdb (api/db rc)

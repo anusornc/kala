@@ -26,10 +26,16 @@
 (defn- remote-db? [d]
   (instance? RemoteDb d))
 
+(defn- peer-only!
+  "The one client-mode rejection for peer-only features."
+  [db op message]
+  (when (remote-db? db)
+    (core/err :client/peer-only message {:op op})))
+
 (defn connect
   "Open a peer connection to a database:
 
-     (connect {:storage :memory :name \"dev\"})
+     (connect {:storage :memory})
      (connect {:storage :file :path \"/var/data/mydb\"})
      (connect {:storage my-adapter})   ; any Storage adapter
 
@@ -38,7 +44,7 @@
   exercisable through the front door. Opening existing storage rebuilds the
   db from the log — crash recovery is part of connect. For remote access,
   connect through kala.client/connect and use these same operations."
-  [{:keys [storage path name] :or {storage :memory name "db"}}]
+  [{:keys [storage path] :or {storage :memory}}]
   (let [s (cond
             (satisfies? storage/Storage storage) storage
             :else (case storage
@@ -70,10 +76,16 @@
 
      (q '[:find ?n :in $ ?name :where [?p :person/name ?name]] (db conn) \"Alice\")
 
-  The query is a data form or an EDN string."
+  In peer mode query/q binds :in by symbol, so % may precede $. Client
+  mode keeps the wire's shape: $ is implicit-first there (the wire
+  carries the db out-of-band), so the inputs after the db marker follow
+  the :in symbols in order. The query is a data form or an EDN string."
   [query & inputs]
-  (if (remote-db? (first inputs))
-    (apply client/q query (first inputs) (rest inputs))
+  (if-let [dbm (first (filter remote-db? inputs))]
+    ;; only the first marker becomes the client's db; any later markers are
+    ;; ordinary inputs (a RemoteDb riding :args is how a bad frame gets made)
+    (let [[before [_ & after]] (split-with #(not (remote-db? %)) inputs)]
+      (apply client/q query dbm (concat before after)))
     (query/q query inputs)))
 
 (defn pull
@@ -88,8 +100,7 @@
   "A lazy navigable entity (peer mode only): (e :attr), (:attr e), :db/id,
   reverse refs via :ns/_attr. Ref attributes return entities."
   [db eid]
-  (when (remote-db? db)
-    (core/err :client/peer-only "Entity navigation is peer-only; use pull in client mode" {:op :entity}))
+  (peer-only! db :entity "Entity navigation is peer-only; use pull in client mode")
   (entity/entity db eid))
 
 (defn touch
@@ -110,8 +121,7 @@
   "All datoms from the requested index position onward (no prefix filter),
   for paging scans (peer mode only)."
   [db index components]
-  (when (remote-db? db)
-    (core/err :client/peer-only "seek-datoms is peer-only in v1" {:op :seek-datoms}))
+  (peer-only! db :seek-datoms "seek-datoms is peer-only in v1")
   (core/seek-datoms db index components))
 
 (defn entid

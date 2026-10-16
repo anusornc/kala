@@ -41,6 +41,14 @@
       (is (= 1 @calls))
       (is (= {:payload :db :back-ref storage} (fetch))))))
 
+(deftest a-falsy-build-result-raises-instead-of-rebuilding-forever
+  ;; the contract the docstring used to state without enforcing: a stored
+  ;; nil or false would rebuild on every fetch, silently
+  (let [cache (wc/make)]
+    (is (thrown? clojure.lang.ExceptionInfo (wc/fetch cache :k :e #(do :nothing nil))))
+    (is (thrown? clojure.lang.ExceptionInfo (wc/fetch cache :k :e (fn [] false))))
+    (is (= :ok (wc/fetch cache :k :e (fn [] :ok))) "a truthy value still caches")))
+
 (deftest entries-die-with-their-key
   ;; weak eviction is the module's reason to exist: the entry atom must be
   ;; reclaimable once the last strong reference to the key is dropped. GC is

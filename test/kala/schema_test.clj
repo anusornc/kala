@@ -4,7 +4,6 @@
   transaction functions, and the AVET index."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
-            [kala.core :as core]
             [kala.test-util :as test-util
              :refer [assert-error define! fresh-conn install-tx-fn!]]))
 

@@ -194,4 +194,4 @@
   ;; every op the protocol table declares has a transactor-side handler, and
   ;; no handler exists for an op the table doesn't know (#26)
   (is (= (set (keys wire/ops))
-         (set (keys @#'kala.transactor/handlers)))))
+         (set (keys kala.transactor/handlers)))))

@@ -3,7 +3,6 @@
   connect -> transact -> datoms/entid reads — exactly as a downstream program would."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
-            [kala.core :as core]
             [kala.eid :as eid]
             [kala.storage.memory :as memory]
             [kala.test-util :refer [fresh-conn]]))
@@ -217,9 +216,9 @@
   ;; the Storage protocol is the declared pluggable seam: an adapter satisfies
   ;; it at the connect seam; the keywords stay as the built-in adapters
   (let [s (memory/empty-storage)
-        conn (api/connect {:storage s :name "adapter"})]
+        conn (api/connect {:storage s})]
     (testing "the adapter is wired in as-is, not re-wrapped"
-      (is (identical? s (core/db-storage (api/db conn)))))
+      (is (identical? s (api/db-storage (api/db conn)))))
     (api/transact conn [[:db/add "n" :db/ident :person/name]
                         [:db/add "n" :db/valueType :db.type/string]])
     (api/transact conn [[:db/add "a" :person/name "Alice"]])
@@ -227,6 +226,6 @@
       (is (= ["Alice"] (mapv :v (api/datoms (api/db conn)
                                             :aevt [(api/entid (api/db conn) :person/name)])))))
     (testing "reopening the same adapter replays its log"
-      (let [conn2 (api/connect {:storage s :name "adapter"})]
+      (let [conn2 (api/connect {:storage s})]
         (is (= ["Alice"] (mapv :v (api/datoms (api/db conn2)
                                               :aevt [(api/entid (api/db conn2) :person/name)]))))))))
