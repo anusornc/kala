@@ -13,7 +13,7 @@
   (:import [java.io BufferedInputStream BufferedOutputStream]
            [java.net Socket]))
 
-(defrecord ClientConn [socket in out lock])
+(defrecord ClientConn [socket in out lock token])
 
 ;; A reference to a server-side db value: :current, :as-of, :since, or
 ;; :history. t pins the as-of point (t counter or tx entity id).
@@ -69,28 +69,33 @@
     (raise-from-reply reply)))
 
 (defn- handshake!
-  "The protocol handshake every fresh socket runs: :connect, then the
-  hello reply — or close-and-raise through refuse!. connect and listen
-  used to be two handshakes, this one raising and the listener's silent."
-  [^Socket sock in out]
-  (wire/write-msg out {:op :connect :protocol-version wire/protocol-version})
+  "The protocol handshake every fresh socket runs: :connect (carrying the
+  connection's token when it has one), then the hello reply — or
+  close-and-raise through refuse!. connect and listen used to be two
+  handshakes, this one raising and the listener's silent."
+  [^Socket sock in out token]
+  (wire/write-msg out (cond-> {:op :connect :protocol-version wire/protocol-version}
+                        token (assoc :token token)))
   (let [hello (wire/read-msg in)]
     (if (= :ok (:status hello))
       hello
       (refuse! sock hello))))
 
 (defn connect
-  "Connect to a running transactor: {:host \"127.0.0.1\" :port 4334}.
-  Performs the protocol handshake; a refusal throws."
-  [{:keys [host port] :or {host "127.0.0.1" port 4334}}]
+  "Connect to a running transactor:
+  {:host \"127.0.0.1\" :port 4334 :token \"...\"} — :token must match the
+  transactor's when it was started with one. Performs the protocol
+  handshake; a refusal (wrong token, version mismatch) throws."
+  [{:keys [host port token] :or {host "127.0.0.1" port 4334}}]
   (let [sock (Socket. ^String host (int ^long port))
         c (->ClientConn sock
                         (BufferedInputStream. (.getInputStream sock))
                         (BufferedOutputStream. (.getOutputStream sock))
-                        (Object.))]
+                        (Object.)
+                        token)]
     (try
       (locking (:lock c)
-        (handshake! sock (:in c) (:out c)))
+        (handshake! sock (:in c) (:out c) token))
       (catch Exception e
         (.close sock)
         (throw e)))
@@ -198,7 +203,7 @@
         in (BufferedInputStream. (.getInputStream sock))
         out (BufferedOutputStream. (.getOutputStream sock))]
     (try
-      (handshake! sock in out)
+      (handshake! sock in out (:token c))
       (wire/write-msg out {:op :listen})
       (let [ack (wire/read-msg in)]
         (when (not= :ok (:status ack))

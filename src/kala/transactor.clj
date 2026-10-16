@@ -11,9 +11,10 @@
            [java.util.concurrent Executors]))
 
 ;; server state: the single-writer connection atom, the set of notification
-;; listener output streams, and a registry of speculative db values (from
-;; :with) addressable by id, since they have no log presence
-(defrecord TransactorState [conn listeners speculative])
+;; listener output streams, a registry of speculative db values (from
+;; :with) addressable by id, since they have no log presence, and the
+;; optional :connect token — nil means the wire requires no auth
+(defrecord TransactorState [conn listeners speculative token])
 
 (def ^:private max-speculative 100)
 
@@ -61,15 +62,20 @@
 ;; added to the table without a handler (or the reverse) fails loudly.
 (def handlers
   {:connect
-   (fn [{:keys [conn]} msg]
-     (if (= wire/protocol-version (:protocol-version msg))
-       (ok {:protocol-version wire/protocol-version
-            :t (api/db-t (api/db conn))})
-       (fail :protocol/version-mismatch
-             (str "Protocol version mismatch: server "
-                  wire/protocol-version ", client " (:protocol-version msg))
-             {:server-version wire/protocol-version
-              :client-version (:protocol-version msg)})))
+   (fn [{:keys [conn token]} msg]
+     ;; the token gates before the version check — an unauthenticated
+     ;; probe learns nothing about the server's protocol version
+     (if-not (wire/token-ok? token (:token msg))
+       (fail :protocol/unauthorized
+             "Invalid or missing token" {})
+       (if (= wire/protocol-version (:protocol-version msg))
+         (ok {:protocol-version wire/protocol-version
+              :t (api/db-t (api/db conn))})
+         (fail :protocol/version-mismatch
+               (str "Protocol version mismatch: server "
+                    wire/protocol-version ", client " (:protocol-version msg))
+               {:server-version wire/protocol-version
+                :client-version (:protocol-version msg)}))))
 
    :db
    (fn [{:keys [conn]} _msg]
@@ -177,7 +183,8 @@
               (when (= :listen (:op msg))
                 (swap! (:listeners state) conj out))
               (when-not (and first-msg?
-                             (= :protocol/version-mismatch (:error reply)))
+                             (#{:protocol/version-mismatch :protocol/unauthorized}
+                              (:error reply)))
                 (recur true)))))))
     (catch Exception e
       ;; one line, no stack trace — the codec-silence posture wire_test
@@ -186,14 +193,15 @@
 
 (defn start!
   "Start a transactor. Opts: :port (0 picks an ephemeral port), :host,
-  :storage (:memory or :file), :path (for file storage). Returns a map with
-  :port, :stop!, :acceptor, :conn. The transactor owns one connection;
-  concurrent client writes serialize through it."
-  [{:keys [host port storage path] :or {port 0 storage :memory}}]
+  :storage (:memory or :file), :path (for file storage), :token (a shared
+  secret every :connect must carry — nil, the default, requires no auth).
+  Returns a map with :port, :stop!, :acceptor, :conn. The transactor owns
+  one connection; concurrent client writes serialize through it."
+  [{:keys [host port storage path token] :or {port 0 storage :memory}}]
   (let [conn (api/connect (if (= :file storage)
                             {:storage :file :path path}
                             {:storage storage}))
-        state (->TransactorState conn (atom #{}) (atom []))
+        state (->TransactorState conn (atom #{}) (atom []) token)
         lock (java.util.concurrent.locks.ReentrantLock.)
         server (ServerSocket. port 50 (InetAddress/getByName (or host "127.0.0.1")))
         executor (Executors/newCachedThreadPool
@@ -219,7 +227,9 @@
               (.shutdownNow executor))}))
 
 (defn parse-config
-  "The transactor config file: EDN map with :host, :port, :storage, :path."
+  "The transactor config file: EDN map with :host, :port, :storage, :path,
+  and optionally :token (a shared secret every client must carry; generate
+  one with e.g. `openssl rand -hex 32`)."
   [s]
   (edn/read-string s))
 

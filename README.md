@@ -137,8 +137,12 @@ What that deliberately does not include:
   machine's memory.
 - **Single writer, single node** — one transactor serializes all writes;
   no replication or HA.
-- **No transport security** — the wire protocol carries no authentication
-  or TLS; bind the transactor to 127.0.0.1 or a trusted network.
+- **Transport security is opt-in and minimal** — starting the transactor
+  with a `:token` requires every client connection (subscriptions
+  included) to authenticate; comparison is constant time. TLS is by
+  termination in front of the transactor (stunnel/nginx/wireguard) —
+  there are no native TLS sockets
+  ([#33](https://github.com/anusornc/kala/issues/33)).
 - **No query sandboxing** — queries and transaction functions run with the
   embedding process's full privileges (the documented trust posture of
   [ADR-0004](docs/adr/0004-transaction-functions-are-stored-edn-source.md)).

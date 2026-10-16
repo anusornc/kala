@@ -23,7 +23,7 @@
 ;; handlers close over kala.api and would drag client→wire→api→client.
 
 (def ops
-  {:connect {:request [:protocol-version]
+  {:connect {:request [:protocol-version :token]
              :reply [:protocol-version :t]
              :is-write? false}
    :db {:request []
@@ -78,6 +78,7 @@
   {:protocol/version-mismatch [:server-version :client-version]
    :protocol/connect-required [:op]
    :protocol/bad-frame []
+   :protocol/unauthorized []
    :transactor/unknown-op [:op]
    :connect/missing-path []
    :connect/unknown-storage [:storage]
@@ -130,6 +131,17 @@
   "The ex-data keys an error kind ships over the wire."
   [kind]
   (get error-data-keys kind default-error-data-keys))
+
+(defn token-ok?
+  "The :connect handshake's token gate (#33): true when the transactor
+  requires no token, or when the supplied token matches — compared in
+  constant time so the handshake does not leak the secret by early exit."
+  [expected supplied]
+  (or (nil? expected)
+      (and (string? supplied)
+           (java.security.MessageDigest/isEqual
+            (.getBytes ^String expected StandardCharsets/UTF_8)
+            (.getBytes ^String supplied StandardCharsets/UTF_8)))))
 
 ;; The db-marker fields a :db-reference? op accepts: as-of :t, a :since-t
 ;; view, :history, or a :db-ref speculative value. docs/wire-protocol.md's

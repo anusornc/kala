@@ -213,11 +213,14 @@
   "Reply-level protocol kinds: raised by the wire layer itself, so they are
   asserted on raw frames rather than through the client. :protocol/bad-frame
   is also reachable naturally — a client value that pr-str's to an EDN tag
-  the transactor cannot read (a RemoteDb riding :args) hits it too."
+  the transactor cannot read (a RemoteDb riding :args) hits it too.
+  :protocol/unauthorized is the client fixture in token-auth-gates-the-
+  handshake; a raw frame asserts its shape."
   {:protocol/version-mismatch [:server-version :client-version]
    :protocol/connect-required [:op]
    :transactor/unknown-op [:op]
-   :protocol/bad-frame []})
+   :protocol/bad-frame []
+   :protocol/unauthorized []})
 
 (deftest error-data-parity-between-peer-and-client
   (let [t (start-transactor!)
@@ -290,6 +293,17 @@
               (is (= :transactor/unknown-op (:error reply)))
               (is (= [:op] (frame-keys reply))))
             (finally (.close sock)))))
+      (testing "a tokened transactor refuses a tokenless :connect (#33)"
+        (let [t2 (tx/start! {:storage :memory :port 0 :token "k"})]
+          (try
+            (let [{:keys [sock in out]} (raw-socket! t2)]
+              (try
+                (wire/write-msg out {:op :connect :protocol-version wire/protocol-version})
+                (let [reply (wire/read-msg in)]
+                  (is (= :protocol/unauthorized (:error reply)))
+                  (is (= [] (frame-keys reply))))
+                (finally (.close sock))))
+            (finally ((:stop! t2))))))
       (testing "an unparseable frame gets a structured reply, then the connection closes (#32)"
         (let [{:keys [sock in out]} (raw-socket! t)]
           (try
@@ -353,7 +367,7 @@
         conn (client/->ClientConn sock
                                   (java.io.BufferedInputStream. (.getInputStream sock))
                                   (java.io.BufferedOutputStream. (.getOutputStream sock))
-                                  (Object.))]
+                                  (Object.) nil)]
     (try
       (.start acceptor)
       (try (client/listen conn (fn [_]))
@@ -398,7 +412,7 @@
         conn (client/->ClientConn sock
                                   (java.io.BufferedInputStream. (.getInputStream sock))
                                   (java.io.BufferedOutputStream. (.getOutputStream sock))
-                                  (Object.))]
+                                  (Object.) nil)]
     (try
       (.start acceptor)
       (try (client/listen conn (fn [_]))
@@ -409,6 +423,52 @@
       (finally
         (.close sock)
         (.close server)))))
+
+(deftest token-auth-gates-the-handshake
+  ;; #33 scope (b): a shared token checked at :connect, constant-time on the
+  ;; transactor side; listen inherits the token from the same connection
+  (let [t (tx/start! {:storage :memory :port 0 :token "s3cret"})]
+    (try
+      (testing "no token is refused with a structured kind"
+        (try (client/connect {:host "127.0.0.1" :port (:port t)})
+             (is false "expected ex-info")
+             (catch clojure.lang.ExceptionInfo e
+               (is (= :protocol/unauthorized (:kala/error (ex-data e)))))))
+      (testing "a wrong token is refused the same way"
+        (try (client/connect {:host "127.0.0.1" :port (:port t) :token "nope"})
+             (is false "expected ex-info")
+             (catch clojure.lang.ExceptionInfo e
+               (is (= :protocol/unauthorized (:kala/error (ex-data e)))))))
+      (finally ((:stop! t))))))
+
+(deftest the-right-token-works
+  (let [t (tx/start! {:storage :memory :port 0 :token "s3cret"})]
+    (try
+      (let [conn (client/connect {:host "127.0.0.1" :port (:port t) :token "s3cret"})]
+        (try
+          (is (int? (:t (api/transact conn [[:db/add "x" :db/ident :t/token-probe]]))))
+          (finally (client/close conn))))
+      (finally ((:stop! t))))))
+
+(deftest listen-inherits-the-token
+  (let [t (tx/start! {:storage :memory :port 0 :token "s3cret"})]
+    (try
+      (let [conn (client/connect {:host "127.0.0.1" :port (:port t) :token "s3cret"})
+            received (atom [])
+            listener (client/listen conn (fn [m] (swap! received conj m)))]
+        (try
+          (Thread/sleep 200)
+          (api/transact conn [[:db/add "y" :db/ident :t/token-probe-2]])
+          (loop [n 0]
+            (when (and (empty? @received) (< n 30))
+              (Thread/sleep 100)
+              (recur (inc n))))
+          (is (= 1 (count @received)))
+          (is (int? (:t (first @received))))
+          (finally
+            ((:stop! listener))
+            (client/close conn))))
+      (finally ((:stop! t))))))
 
 (deftest pinned-kinds-carry-their-keys-where-they-are-constructible
   (testing "peer-side connect kinds never ride a reply"

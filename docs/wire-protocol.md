@@ -16,18 +16,34 @@ The transactor speaks a request/reply protocol over TCP. Version 1.
 ## Handshake
 
 Every connection starts with a `:connect` request carrying the client's
-protocol version; any other first message gets a
-`:protocol/connect-required` error. A version mismatch is a structured
-error and the server closes the connection.
+protocol version — and the shared `:token` when the transactor was
+started with one; a missing or wrong token gets a
+`:protocol/unauthorized` error and the server closes the connection.
+Any other first message gets a `:protocol/connect-required` error. A
+version mismatch is a structured error and the server closes the
+connection.
 
-    {:op :connect :protocol-version 1}
+    {:op :connect :protocol-version 1 :token "<secret>"}
     {:status :ok :protocol-version 1 :t <current t>}
+
+## Transport security
+
+- **Token auth**: starting the transactor with `:token "<secret>"` (the
+  config file's `:token` key) requires every `:connect` — including
+  `:listen` subscriptions, which inherit it from the same connection —
+  to carry a matching token. The comparison is constant time. A
+  tokenless transactor (the default) requires no auth, preserving the
+  bind-127.0.0.1 development posture.
+- **TLS by termination**: Kala speaks plaintext EDN-over-TCP; deploy TLS
+  in front of the transactor (stunnel, nginx, or a wireguard/tailscale
+  tunnel) and keep the token as the application-level check. Native TLS
+  sockets remain deferred work, not a v2 commitment.
 
 ## Requests
 
 | op | fields | reply body |
 | --- | --- | --- |
-| `:connect` | `:protocol-version` | `:protocol-version`, `:t` |
+| `:connect` | `:protocol-version`, `:token` (when the transactor requires one) | `:protocol-version`, `:t` |
 | `:db` | — | `:t` (the transactor's current t) |
 | `:transact` | `:tx-data` (list-form ops and/or map-form entities) | `:t`, `:tx-data` (public datom maps), `:tempids` (incl. `:db/current-tx`) |
 | `:with` | `:tx-data`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:t`, `:db-ref`, `:tx-data`, `:tempids` |
