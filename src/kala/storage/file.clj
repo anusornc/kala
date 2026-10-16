@@ -106,11 +106,7 @@
              vec))
       (append-log [_ entry]
         (let [t (:t entry)]
-          (when-let [prev @last-t]
-            (when (<= t prev)
-              (throw (ex-info "Log :t must be strictly increasing"
-                              {:kala/error :storage/non-monotonic-t
-                               :t t :last-t prev}))))
+          (storage/check-monotonic-t t @last-t)
           ;; last-t advances only when the entry is acked — a failed write
           ;; leaves the held value untouched, so the retry contract holds
           (write-obj (log-file root t) entry)

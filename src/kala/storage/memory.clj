@@ -15,11 +15,7 @@
         (keys @segments))
       (append-log [_ entry]
         (let [t (:t entry)]
-          (when-let [last-t (last (keys @log))]
-            (when (<= t last-t)
-              (throw (ex-info "Log :t must be strictly increasing"
-                              {:kala/error :storage/non-monotonic-t
-                               :t t :last-t last-t}))))
+          (storage/check-monotonic-t t (last (keys @log)))
           (swap! log assoc t entry)
           :ok))
       (log-scan [_ from-t to-t]
