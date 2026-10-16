@@ -207,7 +207,8 @@
    :client/peer-only "client-boundary error — the peer runs these ops in-process and never raises it"
    :client/error "fallback kind for a reply frame without :error; the transactor's fail frames always carry one"
    :storage/non-monotonic-t "peer mode triggers it through the public path below (a lying adapter); client mode cannot carry an adapter — the transactor config is EDN keywords"
-   :storage/rename-failed "needs filesystem fault injection between temp write and rename; keys enumerated for the reply path"})
+   :storage/rename-failed "needs filesystem fault injection between temp write and rename; keys enumerated for the reply path"
+   :connect/bad-token "transactor-side startup validation (start! refuses a non-string or empty :token before binding); never rides a reply"})
 
 (def raw-frame-kinds
   "Reply-level protocol kinds: raised by the wire layer itself, so they are
@@ -302,6 +303,29 @@
                 (let [reply (wire/read-msg in)]
                   (is (= :protocol/unauthorized (:error reply)))
                   (is (= [] (frame-keys reply))))
+                (finally (.close sock))))
+            (finally ((:stop! t2))))))
+      (testing "the token gates before the version check — a probe learns nothing (#33)"
+        (let [t2 (tx/start! {:storage :memory :port 0 :token "k"})]
+          (try
+            (let [{:keys [sock in out]} (raw-socket! t2)]
+              (try
+                (wire/write-msg out {:op :connect :protocol-version (inc wire/protocol-version)})
+                (let [reply (wire/read-msg in)]
+                  (is (= :protocol/unauthorized (:error reply)))
+                  (is (nil? (wire/read-msg in)) "the connection is closed"))
+                (finally (.close sock))))
+            (finally ((:stop! t2))))))
+      (testing "skipping :connect does not bypass the token — the refusal closes (review finding)"
+        (let [t2 (tx/start! {:storage :memory :port 0 :token "k"})]
+          (try
+            (let [{:keys [sock in out]} (raw-socket! t2)]
+              (try
+                (wire/write-msg out {:op :db})
+                (is (= :protocol/connect-required (:error (wire/read-msg in))))
+                (wire/write-msg out {:op :db})
+                (is (nil? (wire/read-msg in))
+                    "no second reply — the connection is closed, unauthenticated ops go nowhere")
                 (finally (.close sock))))
             (finally ((:stop! t2))))))
       (testing "an unparseable frame gets a structured reply, then the connection closes (#32)"
@@ -514,4 +538,13 @@
           (is (= :client/peer-only (:kala/error (ex-data e))))
           (is (= [:op] (sort (disj (into #{} (keys (ex-data e))) :kala/error)))))
         (finally
-          ((:stop! t)))))))
+          ((:stop! t))))))
+
+  (testing "start! refuses a token that is not a non-empty string (review finding)"
+    (doseq [bad [12345 ""]]
+      (let [ex (try (tx/start! {:storage :memory :port 0 :token bad}) nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex) (str "token " (pr-str bad)))
+        (is (= :connect/bad-token (:kala/error (ex-data ex))))
+        (is (= [] (sort (disj (into #{} (keys (ex-data ex))) :kala/error))))))))
+

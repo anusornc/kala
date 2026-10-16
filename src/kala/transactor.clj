@@ -6,6 +6,7 @@
   to a t (as-of), a since view, or history when the request asks."
   (:require [clojure.edn :as edn]
             [kala.api :as api]
+            [kala.core :as core]
             [kala.wire :as wire])
   (:import [java.net InetAddress ServerSocket SocketException]
            [java.util.concurrent Executors]))
@@ -182,9 +183,14 @@
               (wire/write-msg out reply)
               (when (= :listen (:op msg))
                 (swap! (:listeners state) conj out))
-              (when-not (and first-msg?
-                             (#{:protocol/version-mismatch :protocol/unauthorized}
-                              (:error reply)))
+              ;; the handshake is the trust boundary: on the FIRST message
+              ;; any non-ok reply — connect-required, version mismatch, bad
+              ;; or missing token, even a handler error from a poisoned
+              ;; config — ends the connection. Continuing past a refusal
+              ;; would let a client skip :connect and operate unauthenticated
+              ;; (the review-found bypass on ac529e5). After the handshake,
+              ;; per-op failures reply and the connection lives on.
+              (when-not (and first-msg? (not= :ok (:status reply)))
                 (recur true)))))))
     (catch Exception e
       ;; one line, no stack trace — the codec-silence posture wire_test
@@ -194,10 +200,15 @@
 (defn start!
   "Start a transactor. Opts: :port (0 picks an ephemeral port), :host,
   :storage (:memory or :file), :path (for file storage), :token (a shared
-  secret every :connect must carry — nil, the default, requires no auth).
-  Returns a map with :port, :stop!, :acceptor, :conn. The transactor owns
-  one connection; concurrent client writes serialize through it."
+  secret every :connect must carry — nil, the default, requires no auth;
+  a token that is present must be a non-empty string). Returns a map with
+  :port, :stop!, :acceptor, :conn. The transactor owns one connection;
+  concurrent client writes serialize through it."
   [{:keys [host port storage path token] :or {port 0 storage :memory}}]
+  (when (some? token)
+    (when-not (and (string? token) (pos? (.length ^String token)))
+      (core/err :connect/bad-token
+                "The transactor :token must be a non-empty string" {})))
   (let [conn (api/connect (if (= :file storage)
                             {:storage :file :path path}
                             {:storage storage}))

@@ -79,6 +79,7 @@
    :protocol/connect-required [:op]
    :protocol/bad-frame []
    :protocol/unauthorized []
+   :connect/bad-token []
    :transactor/unknown-op [:op]
    :connect/missing-path []
    :connect/unknown-storage [:storage]

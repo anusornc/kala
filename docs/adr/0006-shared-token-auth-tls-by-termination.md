@@ -32,4 +32,24 @@ is encryption itself. The wire protocol's `:connect` gains an optional
 `:token` field and its `:protocol/unauthorized` kind rides the whitelist
 plus fixture discipline like every kind before it. Operators generate the
 secret themselves (e.g. `openssl rand -hex 32`); Kala never provisions or
-stores credentials beyond the config the operator already owns.
+stores credentials beyond the config the operator already owns. The
+comparison is constant time in the token's *contents*; the compare does
+not hide the token's length. Because the same static secret rides every
+`:connect` in plaintext, the token's threat model is exactly "keep
+unauthenticated peers off the transactor" — on the plaintext hop and on
+the terminator→transactor hop it is replayable by anyone who already sees
+that segment's traffic, which the TLS-termination deployment exists to
+protect; rotation and env-var secret sourcing (`TRANSACTOR_TOKEN`) are
+deliberately deferred, not decided against.
+
+A post-implementation review found — and this ADR's original text missed —
+that the gate only lived in the `:connect` handler: a client whose FIRST
+message was anything else got the `:protocol/connect-required` refusal and
+the connection *continued*, so skipping the handshake skipped the token
+entirely (an unauthenticated write was demonstrated). The rule is now
+structural rather than per-kind: on the first message of a connection, ANY
+non-ok reply ends it. The handshake is the trust boundary; there is no
+recovery past a first-message refusal. `start!` also validates the token
+itself (a non-string or empty `:token` raises `:connect/bad-token` before
+the server binds), so a poisoned config cannot degrade into a
+half-functioning gate.
