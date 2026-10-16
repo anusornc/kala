@@ -57,6 +57,12 @@
                (assoc :message (:message reply)))]
     (core/err kind msg data)))
 
+(defn- refuse!
+  "Close the socket and raise through the one reply→exception shape."
+  [^Socket sock reply]
+  (.close sock)
+  (raise-from-reply reply))
+
 (defn- check [reply]
   (if (= :ok (:status reply))
     reply
@@ -64,16 +70,14 @@
 
 (defn- handshake!
   "The protocol handshake every fresh socket runs: :connect, then the
-  hello reply — or a raise through raise-from-reply, socket closed on
-  refusal. connect and listen used to be two handshakes, this one
-  raising and the listener's silent."
+  hello reply — or close-and-raise through refuse!. connect and listen
+  used to be two handshakes, this one raising and the listener's silent."
   [^Socket sock in out]
   (wire/write-msg out {:op :connect :protocol-version wire/protocol-version})
   (let [hello (wire/read-msg in)]
     (if (= :ok (:status hello))
       hello
-      (do (.close sock)
-          (raise-from-reply hello)))))
+      (refuse! sock hello))))
 
 (defn connect
   "Connect to a running transactor: {:host \"127.0.0.1\" :port 4334 :name \"db\"}.
@@ -183,8 +187,10 @@
   msg) for every pushed transaction completion ({:notification
   :tx-completed :t t}). The handshake and the :listen ack run here, so a
   refusal throws — connection refused, version mismatch, a failed ack —
-  and the subscription is active when listen returns. Returns {:stop! f}.
-  Callbacks run on the reader thread — return fast."
+  and the subscription is active when listen returns. A connection that
+  drops later ends the reader thread quietly (a crash is not observable
+  on a push channel). Returns {:stop! f}. Callbacks run on the reader
+  thread — return fast."
   [^ClientConn c callback]
   (let [host (.. c socket getInetAddress getHostAddress)
         port (.. c socket getPort)
@@ -196,8 +202,7 @@
       (wire/write-msg out {:op :listen})
       (let [ack (wire/read-msg in)]
         (when (not= :ok (:status ack))
-          (.close sock)
-          (raise-from-reply ack))
+          (refuse! sock ack))
         (let [stop-flag (atom false)
               thread (Thread. (fn []
                                 ;; no catch: a stop reads nil through

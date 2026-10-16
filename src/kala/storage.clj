@@ -24,7 +24,7 @@
   raises with {:t :last-t}. Adapters call this before appending — a new
   backend inherits the check instead of re-deriving it."
   [t last-t]
-  (when (and last-t (<= t last-t))
+  (when (and (some? last-t) (<= t last-t))
     (throw (ex-info "Log :t must be strictly increasing"
                     {:kala/error :storage/non-monotonic-t
                      :t t :last-t last-t}))))

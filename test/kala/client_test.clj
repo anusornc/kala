@@ -365,6 +365,51 @@
         (.close sock)
         (.close server)))))
 
+(deftest listen-ack-refusal-raises
+  ;; the ack is part of the subscription contract: a non-ok ack raises,
+  ;; it does not return a listener that silently never fires
+  (let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getByName "127.0.0.1"))
+        port (.getLocalPort server)
+        acceptor (Thread. (fn []
+                            (try
+                              ;; the marker conn listen derives its endpoint from
+                              (let [marker (.accept server)]
+                                (wire/write-msg (.getOutputStream marker)
+                                                {:status :error
+                                                 :error :protocol/version-mismatch
+                                                 :message "no"})
+                                (.close marker))
+                              ;; listen's socket: handshake ok, ack refused
+                              (let [sock (.accept server)]
+                                (.setSoTimeout sock 5000)
+                                (let [in (java.io.BufferedInputStream. (.getInputStream sock))
+                                      out (java.io.BufferedOutputStream. (.getOutputStream sock))]
+                                  (wire/read-msg in)
+                                  (wire/write-msg out {:status :ok
+                                                       :protocol-version wire/protocol-version
+                                                       :t 2})
+                                  (wire/read-msg in)
+                                  (wire/write-msg out {:status :error
+                                                       :error :protocol/version-mismatch
+                                                       :message "ack refused"})
+                                  (.close sock)))
+                              (catch Exception _))))
+        sock (java.net.Socket. "127.0.0.1" (int port))
+        conn (client/->ClientConn sock
+                                  (java.io.BufferedInputStream. (.getInputStream sock))
+                                  (java.io.BufferedOutputStream. (.getOutputStream sock))
+                                  (Object.))]
+    (try
+      (.start acceptor)
+      (try (client/listen conn (fn [_]))
+           (is false "expected listen to raise")
+           (catch clojure.lang.ExceptionInfo e
+             (is (= :protocol/version-mismatch (:kala/error (ex-data e))))
+             (is (= "ack refused" (ex-message e)))))
+      (finally
+        (.close sock)
+        (.close server)))))
+
 (deftest pinned-kinds-carry-their-keys-where-they-are-constructible
   (testing "peer-side connect kinds never ride a reply"
     (let [ex (try (api/connect {:storage :file :name "x"}) nil
