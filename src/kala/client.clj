@@ -43,22 +43,41 @@
              (:db-reference? (wire/op-spec op))
              (merge (db-extras db)))))
 
+(defn- raise-from-reply
+  "The one reply→exception shape: the frame's kind (:client/error when
+  absent), the frame's message, ex-data carrying the kind's whitelisted
+  keys (:message re-inserted when the kind whitelists it — fail frames
+  merge data over :message). connect, check, and listen all raise through
+  this, so one failure class has one ex-data contract."
+  [reply]
+  (let [kind (or (:error reply) :client/error)
+        msg (or (:message reply) "Client request failed")
+        data (cond-> (dissoc reply :status :error :message)
+               (some #{:message} (wire/error-data-keys-for kind))
+               (assoc :message (:message reply)))]
+    (core/err kind msg data)))
+
 (defn- check [reply]
   (if (= :ok (:status reply))
     reply
-    ;; the frame's :message slot carries the error text — EXCEPT for a kind
-    ;; whose whitelisted data includes :message (fail merges the data over
-    ;; it), where the client must put it back so ex-data matches peer data
-    (let [kind (or (:error reply) :client/error)
-          msg (or (:message reply) "Client request failed")
-          data (cond-> (dissoc reply :status :error :message)
-                 (some #{:message} (wire/error-data-keys-for kind))
-                 (assoc :message (:message reply)))]
-      (core/err kind msg data))))
+    (raise-from-reply reply)))
+
+(defn- handshake!
+  "The protocol handshake every fresh socket runs: :connect, then the
+  hello reply — or a raise through raise-from-reply, socket closed on
+  refusal. connect and listen used to be two handshakes, this one
+  raising and the listener's silent."
+  [^Socket sock in out]
+  (wire/write-msg out {:op :connect :protocol-version wire/protocol-version})
+  (let [hello (wire/read-msg in)]
+    (if (= :ok (:status hello))
+      hello
+      (do (.close sock)
+          (raise-from-reply hello)))))
 
 (defn connect
   "Connect to a running transactor: {:host \"127.0.0.1\" :port 4334 :name \"db\"}.
-  Performs the protocol handshake; a version mismatch throws."
+  Performs the protocol handshake; a refusal throws."
   [{:keys [host port name] :or {host "127.0.0.1" port 4334 name "db"}}]
   (let [sock (Socket. ^String host (int ^long port))
         c (->ClientConn sock
@@ -67,13 +86,7 @@
                         (Object.))]
     (try
       (locking (:lock c)
-        (wire/write-msg (:out c) {:op :connect :protocol-version wire/protocol-version})
-        (let [reply (wire/read-msg (:in c))]
-          (when (not= :ok (:status reply))
-            (.close sock)
-            (core/err (or (:error reply) :client/error)
-                      (or (:message reply) "Protocol handshake failed")
-                      {:reply reply}))))
+        (handshake! sock (:in c) (:out c)))
       (catch Exception e
         (.close sock)
         (throw e)))
@@ -168,33 +181,42 @@
 (defn listen
   "Open a notification socket to the same transactor and invoke (callback
   msg) for every pushed transaction completion ({:notification
-  :tx-completed :t t}). Returns {:stop! f}. Callbacks run on the reader
-  thread — return fast."
+  :tx-completed :t t}). The handshake and the :listen ack run here, so a
+  refusal throws — connection refused, version mismatch, a failed ack —
+  and the subscription is active when listen returns. Returns {:stop! f}.
+  Callbacks run on the reader thread — return fast."
   [^ClientConn c callback]
   (let [host (.. c socket getInetAddress getHostAddress)
         port (.. c socket getPort)
         sock (Socket. ^String host (int ^long port))
         in (BufferedInputStream. (.getInputStream sock))
-        out (BufferedOutputStream. (.getOutputStream sock))
-        stop-flag (atom false)
-        thread (Thread. (fn []
-                          (try
-                            (wire/write-msg out {:op :connect :protocol-version wire/protocol-version})
-                            (when-some [hello (wire/read-msg in)]
-                              (when (= :ok (:status hello))
-                                (wire/write-msg out {:op :listen})
-                                (wire/read-msg in)         ; the :listen ack
+        out (BufferedOutputStream. (.getOutputStream sock))]
+    (try
+      (handshake! sock in out)
+      (wire/write-msg out {:op :listen})
+      (let [ack (wire/read-msg in)]
+        (when (not= :ok (:status ack))
+          (.close sock)
+          (raise-from-reply ack))
+        (let [stop-flag (atom false)
+              thread (Thread. (fn []
+                                ;; no catch: a stop reads nil through
+                                ;; read-msg's EOF/SocketException rule, and
+                                ;; a throwing callback surfaces on the
+                                ;; thread instead of dying silently
                                 (loop []
                                   (when-not @stop-flag
                                     (when-some [msg (wire/read-msg in)]
                                       (callback msg)
-                                      (recur))))))
-                            (catch Exception _))))]
-    (.setDaemon thread true)
-    (.start thread)
-    {:stop! (fn []
-              (reset! stop-flag true)
-              (.close sock))}))
+                                      (recur))))))]
+          (.setDaemon thread true)
+          (.start thread)
+          {:stop! (fn []
+                    (reset! stop-flag true)
+                    (.close sock))}))
+      (catch Exception e
+        (.close sock)
+        (throw e)))))
 
 (defn close
   "Close the client's socket."

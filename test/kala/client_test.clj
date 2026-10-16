@@ -331,6 +331,40 @@
       (finally
         ((:stop! t))))))
 
+(deftest listen-refusal-raises-not-swallows
+  ;; the listener handshake ran on the daemon thread and swallowed every
+  ;; failure — a refusal (version mismatch, a future server) produced a
+  ;; listener that never fired the callback and never said why. The fake
+  ;; server refuses every connection it gets: the marker conn listen
+  ;; derives its endpoint from, then listen's own socket.
+  (let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getByName "127.0.0.1"))
+        port (.getLocalPort server)
+        acceptor (Thread. (fn []
+                            (try
+                              (dotimes [_ 2]
+                                (let [sock (.accept server)]
+                                  (wire/write-msg (.getOutputStream sock)
+                                                  {:status :error
+                                                   :error :protocol/version-mismatch
+                                                   :message "future server"})
+                                  (.close sock)))
+                              (catch Exception _))))
+        sock (java.net.Socket. "127.0.0.1" (int port))
+        conn (client/->ClientConn sock
+                                  (java.io.BufferedInputStream. (.getInputStream sock))
+                                  (java.io.BufferedOutputStream. (.getOutputStream sock))
+                                  (Object.))]
+    (try
+      (.start acceptor)
+      (try (client/listen conn (fn [_]))
+           (is false "expected listen to raise")
+           (catch clojure.lang.ExceptionInfo e
+             (is (= :protocol/version-mismatch (:kala/error (ex-data e))))
+             (is (= "future server" (ex-message e)))))
+      (finally
+        (.close sock)
+        (.close server)))))
+
 (deftest pinned-kinds-carry-their-keys-where-they-are-constructible
   (testing "peer-side connect kinds never ride a reply"
     (let [ex (try (api/connect {:storage :file :name "x"}) nil
