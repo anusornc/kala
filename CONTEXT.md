@@ -60,6 +60,10 @@ _Avoid_: truth, world state, snapshot
 The three built-in memory idents — :memory/session, :memory.session/id, :memory/source — that attribute every turn to its session and let a derivation cite its turn. The memory namespace is reserved to the layer; every other attribute in memory is the developer's vocabulary.
 _Avoid_: memory schema, provenance schema
 
+**turn listing**:
+The step index of one session: ordered [t, turn ordinal, txInstant] triples, one per turn. It is how "step 12" becomes a t; the context document keeps its txInstant out.
+_Avoid_: session log, turn table
+
 ### Schema
 
 **attribute**:

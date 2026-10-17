@@ -194,3 +194,129 @@
     (testing "nothing from a refused record lands"
       (is (nil? (ffirst (api/q '[:find ?e :in $ :where [?e :memory.session/id "forged"]]
                                (api/db conn))))))))
+
+;; ---- read doors ---------------------------------------------------------------
+
+(deftest query-door-caps-with-visible-truncation
+  (let [conn (ready-conn)
+        s (memory/session conn)]
+    (dotimes [i 5]
+      (memory/record conn s [[:db/add (str "e" i) :proj/name (str "n" i)]]))
+    (let [db (api/db conn)
+          q '[:find ?n :where [?e :proj/name ?n]]]
+      (testing "under the cap: result and an honest not-capped marker"
+        (let [{:keys [result truncated]} (memory/query db q {})]
+          (is (= 5 (count result)))
+          (is (= {:capped? false} truncated))))
+      (testing "over the cap: capped visibly, values never hinted at"
+        (let [{:keys [result truncated]} (memory/query db q {:limit 2})]
+          (is (= 2 (count result)))
+          (is (= {:capped? true :shown 2 :dropped 3 :limit 2} truncated))))
+      (testing ":args binds the rest of :in, in order"
+        (let [eid (ffirst (api/q '[:find ?e :where [?e :proj/name "n1"]] db))
+              {:keys [result]} (memory/query db '[:find ?v :in $ ?e :where [?e :proj/name ?v]]
+                                             {:args [eid]})]
+          (is (= [["n1"]] result))))
+      (testing ":as-of pins the read to a belief state"
+        (let [r1 (memory/record conn s [[:db/add "p" :proj/name "v1"]])
+              eid (get (:tempids r1) "p")
+              t1 (:t r1)
+              _ (memory/record conn s [[:db/add eid :proj/name "v2"]])
+              db (api/db conn)
+              q1 '[:find ?v :in $ ?e :where [?e :proj/name ?v]]]
+          (is (= [["v1"]] (:result (memory/query db q1 {:args [eid] :as-of t1}))))
+          (is (= [["v2"]] (:result (memory/query db q1 {:args [eid]}))))))
+      (testing "scalar find shapes pass through uncapped"
+        (let [{:keys [result truncated]} (memory/query db '[:find [?n] :where [?e :proj/name ?n]] {})]
+          (is (string? result))
+          (is (= {:capped? false} truncated))))
+      (testing "kala error kinds surface verbatim"
+        (assert-error :query/bad-query
+          (memory/query db '[:where [?e :proj/name ?n]] {}))))))
+
+(deftest pull-door-refuses-oversize-documents
+  (let [conn (ready-conn)
+        _ (api/transact conn [[:db/add "blob" :db/ident :proj/blob]
+                              [:db/add "blob" :db/valueType :db.type/string]
+                              [:db/add "blob" :db/cardinality :db.cardinality/one]])
+        s (memory/session conn)
+        big (apply str (repeat 20000 "x"))
+        r (memory/record conn s [[:db/add "p" :proj/name "named"]
+                                 [:db/add "p" :proj/blob big]])
+        eid (get (:tempids r) "p")
+        db (api/db conn)]
+    (testing "the whole entity is over the cap: refuse, never truncate"
+      (assert-error :memory/result-too-large (memory/pull db eid {})))
+    (testing "a narrower pattern fits"
+      (is (= {:db/id eid :proj/name "named"}
+             (memory/pull db eid {:pattern [:proj/name]}))))
+    (testing "a nonexistent entity is nil, not an error"
+      (is (nil? (memory/pull db 999999 {}))))
+    (testing "kala's own pull errors surface verbatim"
+      (assert-error :pull/bad-pattern (memory/pull db eid {:pattern [[:proj/name :bogus-opt 1]]})))))
+
+(deftest history-door-scopes
+  (let [conn (ready-conn)
+        s1 (memory/session conn {:id "s1"})
+        s2 (memory/session conn {:id "s2"})
+        r1 (memory/record conn s1 [[:db/add "p" :proj/name "v1"]])
+        eid (get (:tempids r1) "p")
+        _ (memory/record conn s2 [[:db/add "q" :proj/name "other-session"]])
+        r3 (memory/record conn s1 [[:db/add eid :proj/name "v2"]
+                                   [:db/add eid :proj/note "derived"]])
+        db (api/db conn)]
+    (testing "entity scope: the correction trail, in t order"
+      (let [{:keys [result truncated]} (memory/history db {:scope :entity :entity eid})]
+        (is (= {:capped? false} truncated))
+        (is (= [["v1" true (:t r1)] ["v1" false (:t r3)] ["v2" true (:t r3)] ["derived" true (:t r3)]]
+               (mapv (juxt :v :added :t) result))
+            "t order; within one turn the index's own value order")))
+    (testing "entity scope narrows to attributes"
+      (let [{:keys [result]} (memory/history db {:scope :entity :entity eid :attrs #{:proj/name}})]
+        (is (every? #(= :proj/name (:a %)) result))
+        (is (= 3 (count result)))))
+    (testing "entity scope honors inclusive t bounds"
+      (let [{:keys [result]} (memory/history db {:scope :entity :entity eid :from-t (:t r3)})]
+        (is (= 3 (count result)))
+        (is (every? #(= (:t r3) (:t %)) result))))
+    (testing "session scope: the provenance trail, other sessions excluded"
+      (let [{:keys [result]} (memory/history db {:scope :session :session "s1"})
+            own-turns #{(:t r1) (:t r3)}]
+        (is (contains? own-turns (:t r1)))
+        (is (every? #(contains? own-turns (:t %)) result) "only s1's turns")
+        (is (some #(= :memory/session (:a %)) result) "the attribution datom rides its own trail")))
+    (testing "session scope accepts a session entity id too"
+      (let [{:keys [result]} (memory/history db {:scope :session :session s1})]
+        (is (pos? (count result)))))
+    (testing "bad handles raise memory kinds"
+      (assert-error :memory/bad-scope (memory/history db {:scope :everything}))
+      (assert-error :memory/unknown-session (memory/history db {:scope :session :session "nope"}))
+      (assert-error :memory/bad-option (memory/history db {:scope :entity :entity "p"}))
+      (assert-error :memory/bad-option (memory/history db {:scope :entity :entity eid :from-t -1})))))
+
+(deftest turns-door-lists-the-step-index
+  (let [conn (ready-conn)
+        s (memory/session conn {:id "main"})
+        r1 (memory/record conn s [[:db/add "p" :proj/name "one"]])
+        r2 (memory/record conn s [[:db/add "p2" :proj/name "two"]])
+        db (api/db conn)]
+    (testing "one triple per turn, in t order, ordinals 1-based"
+      (let [{:keys [session turns truncated]} (memory/turns db "main" {})]
+        (is (= "main" session))
+        (is (= {:capped? false} truncated))
+        (is (= [[(:t r1) 1] [(:t r2) 2]] (mapv (juxt first second) turns)))
+        (is (every? #(inst? (nth % 2)) turns) "the wall clock rides the door, honestly")))
+    (testing "bounded by :as-of — a pinned belief state never sees its future"
+      (let [{:keys [turns]} (memory/turns db "main" {:as-of (:t r1)})]
+        (is (= [[(:t r1) 1]] (mapv (juxt first second) turns)))))
+    (testing "capped like every list-shaped door"
+      (let [{:keys [turns truncated]} (memory/turns db "main" {:limit 1})]
+        (is (= 1 (count turns)))
+        (is (= {:capped? true :shown 1 :dropped 1 :limit 1} truncated))))
+    (testing "handles: id string and entity id alike"
+      (let [s-eid (memory/session conn {:id "main"})]
+        (is (= 2 (count (:turns (memory/turns db s-eid {})))))))
+    (testing "unknown sessions raise"
+      (assert-error :memory/unknown-session (memory/turns db "nope" {})))
+    (testing "bad options raise"
+      (assert-error :memory/bad-option (memory/turns db "main" {:limit 0})))))
