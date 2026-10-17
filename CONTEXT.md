@@ -56,6 +56,10 @@ _Avoid_: event, step, episode
 What memory held as of one t: a db value read as the agent's view at that point.
 _Avoid_: truth, world state, snapshot
 
+**spine**:
+The three built-in memory idents — :memory/session, :memory.session/id, :memory/source — that attribute every turn to its session and let a derivation cite its turn. The memory namespace is reserved to the layer; every other attribute in memory is the developer's vocabulary.
+_Avoid_: memory schema, provenance schema
+
 ### Schema
 
 **attribute**:

@@ -10,6 +10,7 @@
 
             [kala.api-test]
             [kala.map-tx-test]
+            [kala.memory-test]
             [kala.pull-entity-test]
             [kala.query-rules-test]
             [kala.query-test]
@@ -28,6 +29,7 @@
 (def ^:private behavioral-ns-symbols
   ['kala.api-test
    'kala.map-tx-test
+   'kala.memory-test
    'kala.pull-entity-test
    'kala.query-rules-test
    'kala.query-test
