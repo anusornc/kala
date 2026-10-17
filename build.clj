@@ -14,8 +14,13 @@
 ;; dependency: kala-mcp carries mcp/ plus its one codec dependency and
 ;; declares io.github.anusornc/kala (same release train, same version).
 (def mcp-lib 'io.github.anusornc/kala-mcp)
+;; kala-mcp may version independently when a Clojars deploy poisons its
+;; copy of a release version (0.3.0's first pom was invalid and stuck);
+;; MCP_RELEASE_VERSION overrides while the kala dependency stays on the
+;; main release version.
+(def mcp-version (or (System/getenv "MCP_RELEASE_VERSION") version))
 (def mcp-class-dir "target/mcp-classes")
-(def mcp-jar-file (format "target/%s-%s.jar" (name mcp-lib) version))
+(def mcp-jar-file (format "target/%s-%s.jar" (name mcp-lib) mcp-version))
 
 (defn- licenses-pom-data []
   [[:description "The kala memory layer as an MCP server: six tools over stdio — context, record, recall, read, history, turns."]
@@ -26,20 +31,19 @@
      [:url "https://www.eclipse.org/legal/epl-v10.html"]]]
    [:scm [:url "https://github.com/anusornc/kala"]
     [:connection "scm:git:git://github.com/anusornc/kala.git"]
-    [:developerConnection "scm:git:ssh://git@github.com/anusornc/kala.git"]]
-   [:dependencies
-    [:dependency
-     [:groupId "io.github.anusornc"]
-     [:artifactId "kala"]
-     [:version version]]]])
+    [:developerConnection "scm:git:ssh://git@github.com/anusornc/kala.git"]]])
 
 (defn mcp-jar [_]
   (b/delete {:path mcp-class-dir})
+  ;; the kala dependency comes in via :extra so tools.build emits ONE
+  ;; <dependencies> section (a [:dependencies ...] in :pom-data would
+  ;; duplicate the basis's and Clojars rejects the unparseable pom)
   (b/write-pom
    {:class-dir mcp-class-dir
     :lib mcp-lib
-    :version version
-    :basis (b/create-basis {:project "deps.edn" :aliases [:mcp]})
+    :version mcp-version
+    :basis (b/create-basis {:project "deps.edn" :aliases [:mcp]
+                            :extra {:deps {'io.github.anusornc/kala {:mvn/version version}}}})
     :src-dirs ["mcp"]
     :pom-data (licenses-pom-data)})
   (b/copy-dir {:src-dirs ["mcp"] :target-dir mcp-class-dir})
@@ -50,7 +54,7 @@
 (defn mcp-deploy [_]
   (mcp-jar nil)
   (let [pom (str mcp-class-dir "/META-INF/maven/" (namespace mcp-lib) "/" (name mcp-lib) "/pom.xml")]
-    (println "Deploying" mcp-jar-file "to Clojars as" mcp-lib version)
+    (println "Deploying" mcp-jar-file "to Clojars as" mcp-lib mcp-version)
     ((requiring-resolve 'deps-deploy.deps-deploy/deploy)
      {:artifact mcp-jar-file
       :installer :remote
