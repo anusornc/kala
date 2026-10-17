@@ -38,6 +38,24 @@ _Avoid_: tx metadata, epoch
 One of the read entry points over db values — datoms, seek-datoms, pull, entity navigation, query patterns. Every read door resolves entity references the same way: a keyword through the registry's ident map, an integer as itself.
 _Avoid_: accessor, surface
 
+### Memory
+
+**memory**:
+The knowledge from an agent's runs held as datoms in a kala database under the memory schema.
+_Avoid_: knowledge base, brain, store
+
+**session**:
+One run of an agent recording memory; the datoms it writes fall within its t range.
+_Avoid_: run, conversation
+
+**turn**:
+One recording step of a session — exactly one transaction; the transaction entity is its record.
+_Avoid_: event, step, episode
+
+**belief state**:
+What memory held as of one t: a db value read as the agent's view at that point.
+_Avoid_: truth, world state, snapshot
+
 ### Schema
 
 **attribute**:
