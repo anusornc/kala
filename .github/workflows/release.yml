@@ -59,9 +59,19 @@ jobs:
           CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
 
-      - name: Attach jar to a GitHub release
+      - name: Build and deploy the kala-mcp artifact (same release train)
         run: |
-          gh release create "$GITHUB_REF_NAME" "target/$JAR_NAME" \
+          VERSION="${GITHUB_REF_NAME#v}"
+          RELEASE_VERSION="$VERSION" clojure -T:build mcp-jar
+          echo "MCP_JAR_NAME=kala-mcp-$VERSION.jar" >> "$GITHUB_ENV"
+          RELEASE_VERSION="$VERSION" clojure -T:build mcp-deploy
+        env:
+          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
+
+      - name: Attach jars to a GitHub release
+        run: |
+          gh release create "$GITHUB_REF_NAME" "target/$JAR_NAME" "target/$MCP_JAR_NAME" \
             --title "kala $GITHUB_REF_NAME" \
             --generate-notes
         env:

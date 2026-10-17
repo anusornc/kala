@@ -47,6 +47,18 @@
   (b/jar {:class-dir mcp-class-dir :jar-file mcp-jar-file})
   (println "Built" mcp-jar-file))
 
+(defn mcp-deploy [_]
+  (mcp-jar nil)
+  (let [pom (str mcp-class-dir "/META-INF/maven/" (namespace mcp-lib) "/" (name mcp-lib) "/pom.xml")]
+    (println "Deploying" mcp-jar-file "to Clojars as" mcp-lib version)
+    ((requiring-resolve 'deps-deploy.deps-deploy/deploy)
+     {:artifact mcp-jar-file
+      :installer :remote
+      :pom-file pom
+      :repository {"clojars" {:url "https://clojars.org/repo"
+                              :username (System/getenv "CLOJARS_USERNAME")
+                              :password (System/getenv "CLOJARS_PASSWORD")}}})))
+
 (defn clean [_]
   (b/delete {:path "target"})
   (println "Cleaned target/"))
