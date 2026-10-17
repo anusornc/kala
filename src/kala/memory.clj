@@ -46,7 +46,17 @@
   a turn is the whole point of the citation path."
   #{:memory/session :memory/_session :memory.session/id :memory.session/_id})
 
-(def ^:private tx-meta-id "datomic.tx")
+(def ^:private data-only-op-heads
+  "The agent write surface is data-only: adds, retracts, compare-and-swap.
+  Everything else a transaction can carry is refused by record itself —
+  retractEntity would erase a session entity from current state (the
+  provenance join would lose its target), and transaction-function calls
+  would hand the stored code a chance to write what the data rules refuse
+  (ADR-0004: those are the developer's code, reached through the
+  developer's own transacts, never through record)."
+  #{:db/add :db/retract :db.fn/cas})
+
+(def ^:private current-tx-tempid "datomic.tx")
 
 (def ^:private session-tempid "kala.memory/session")
 
@@ -115,8 +125,6 @@
 
 ;; ---- recording ---------------------------------------------------------------
 
-(def ^:private guarded-op-heads #{:db/add :db/retract :db.fn/cas})
-
 (declare check-entity-map!)
 
 (defn- check-value!
@@ -137,13 +145,20 @@
     (check-value! v)))
 
 (defn- check-op!
-  "One op vector: the attribute slot of add/retract/cas is the only place
-  an op names an attribute. Transaction-function calls pass data to
-  developer-authored stored code (ADR-0004) — the caller's own trust
-  domain, outside this guard."
+  "One op vector. Data-only is an allowlist, not a case list: an op whose
+  head record does not name is refused outright, whatever it is — the
+  transactor grows op kinds, and a refusal must not depend on remembering
+  to enumerate the dangerous ones. For the allowed heads, the attribute
+  slot is the only place an op names an attribute."
   [op]
   (let [[head & args] op]
-    (when (and (keyword? head) (guarded-op-heads head))
+    (cond
+      (not (keyword? head)) nil                       ; not an op shape — the transactor rejects it
+      (not (data-only-op-heads head))
+      (core/err :memory/data-only
+                "record takes data-only writes: :db/add, :db/retract, :db.fn/cas"
+                {:op head})
+      :else
       (let [attr (nth args 1 nil)]
         (when (reserved-write-attrs attr)
           (core/err :memory/reserved-attr
@@ -164,6 +179,13 @@
             (vector? op) (check-op! op)
             :else nil))
         tx-data))
+
+(defn- require-session!
+  [db session]
+  (or (session-entity-id db session)
+      (core/err :memory/unknown-session
+                "No session carries this handle"
+                {:session session})))
 
 (defn- turn-count
   "How many turns the session has — its transactions in the log. The newest
@@ -194,16 +216,13 @@
   (let [db (api/db conn)]
     (ensure-spine! db)
     (check-user-ops! tx-data)
-    (let [s-eid (or (session-entity-id db session)
-                    (core/err :memory/unknown-session
-                              "No session carries this handle"
-                              {:session session}))
-          report (api/transact conn (into [{:db/id tx-meta-id :memory/session s-eid}]
+    (let [s-eid (require-session! db session)
+          report (api/transact conn (into [{:db/id current-tx-tempid :memory/session s-eid}]
                                           tx-data))]
       {:t (:t report)
        :turn (turn-count (:db-after report) s-eid)
        :tx (get-in report [:tempids :db/current-tx])
-       :tempids (dissoc (:tempids report) :db/current-tx tx-meta-id)
+       :tempids (dissoc (:tempids report) :db/current-tx current-tx-tempid)
        :datoms (count (:tx-data report))})))
 
 ;; ---- read doors ----------------------------------------------------------------
@@ -243,7 +262,7 @@
     {:capped? true :shown (count shown) :dropped dropped :limit limit}
     {:capped? false}))
 
-(defn- cap-rows
+(defn- cap-list
   "Cap a list-shaped result. A silently truncated answer would misstate
   the agent's belief, so the cap always rides along visibly."
   [rows limit]
@@ -269,7 +288,7 @@
                  (apply api/q query-form db args)
                  (api/q query-form db))]
     (if (sequential? result)
-      (cap-rows result limit)
+      (cap-list result limit)
       {:result result :truncated {:capped? false}})))
 
 (defn pull
@@ -310,7 +329,8 @@
   of one entity, optionally narrowed to attributes. Session scope is the
   provenance trail — every datom the session's turns wrote, joined
   through the spine. Entries are {:e :a :v :t :added}, optionally bounded
-  by inclusive :from-t/:to-t. Capped like query."
+  by the pin and inclusive :from-t/:to-t — the pin bounds the trail
+  itself, in both access modes. Capped like query."
   [db {:keys [scope entity session attrs from-t to-t as-of limit]}]
   (let [db (pin-db db {:as-of as-of})
         limit (opt-int! :limit limit default-limit max-limit)
@@ -324,10 +344,7 @@
                            (api/datoms (api/history db) :eavt [entity]))
 
                        :session
-                       (let [s-eid (or (session-entity-id db session)
-                                       (core/err :memory/unknown-session
-                                                 "No session carries this handle"
-                                                 {:session session}))
+                       (let [s-eid (require-session! db session)
                              txs (into #{}
                                        (map first)
                                        (api/q '[:find ?tx :in $ ?s
@@ -341,13 +358,14 @@
                                  {:scope scope}))
                      (map norm-datom)
                      (filter (fn [{:keys [t]}]
-                               (and (or (nil? from-t) (>= t from-t))
+                               (and (or (nil? as-of) (<= t as-of))
+                                    (or (nil? from-t) (>= t from-t))
                                     (or (nil? to-t) (<= t to-t)))))
                      (filter (fn [{:keys [a]}]
                                (or (nil? attrs) (contains? (set attrs) a))))
                      (sort-by :t)
                      vec)]
-    (cap-rows entries limit)))
+    (cap-list entries limit)))
 
 (defn turns
   "The step index of a session — the way \"step 12\" becomes a t:
@@ -361,13 +379,10 @@
   [db session {:keys [as-of limit]}]
   (let [db (pin-db db {:as-of as-of})
         limit (opt-int! :limit limit default-limit max-limit)
-        s-eid (or (session-entity-id db session)
-                  (core/err :memory/unknown-session
-                            "No session carries this handle"
-                            {:session session}))
+        s-eid (require-session! db session)
         sid (or (:memory.session/id (api/pull db '[:memory.session/id] s-eid)) session)
         {:keys [result truncated]}
-        (cap-rows (->> (api/q '[:find ?tx ?inst :in $ ?s
+        (cap-list (->> (api/q '[:find ?tx ?inst :in $ ?s
                                 :where [?tx :memory/session ?s]
                                        [?tx :db/txInstant ?inst]]
                               db s-eid)
@@ -385,9 +400,9 @@
 (def ^:private max-cap "The hard ceiling a caller's :cap clamps to." 500)
 
 (defn- reserved-attr-ns?
-  "The db and memory namespaces belong to the machinery; a fact of memory
-  is the developer's vocabulary. (Avoid: fact — this predicate names the
-  boundary, the glossary names the content.)"
+  "The db and memory namespaces belong to the machinery; memory's content
+  is the developer's vocabulary — this predicate names the boundary, the
+  glossary names the content."
   [a]
   (let [ns (namespace a)]
     (or (= ns "db")
@@ -469,33 +484,34 @@
   (->> shown-entities
        (sort)
        (mapcat (fn [e]
-                 (->> (filter (fn [d] (<= (eid/eid->t (:tx d)) t))
-                              (api/datoms (api/history db) :eavt [e]))
-                      (filter (fn [d] (false? (:added d))))
-                      (sort-by (comp eid/eid->t :tx))
-                      (map (fn [r]
-                             (let [a (:a r)
-                                   v (:v r)
-                                   until (eid/eid->t (:tx r))
-                                   asserted (->> (filter (fn [d]
-                                                           (and (:added d)
-                                                                (= (:a d) a)
-                                                                (= (:v d) v)
-                                                                (<= (eid/eid->t (:tx d)) until)))
-                                                         (api/datoms (api/history db) :eavt [e]))
-                                                 (map (comp eid/eid->t :tx))
-                                                 (apply max))
+                 (let [hist (->> (api/datoms (api/history db) :eavt [e])
+                                 (filter (fn [d] (<= (eid/eid->t (:tx d)) t)))
+                                 vec)]
+                   (->> (filter (fn [d] (false? (:added d))) hist)
+                        (sort-by (comp eid/eid->t :tx))
+                        (map (fn [r]
+                               (let [a (:a r)
+                                     v (:v r)
+                                     until (eid/eid->t (:tx r))
+                                     asserted (->> (filter (fn [d]
+                                                             (and (:added d)
+                                                                  (= (:a d) a)
+                                                                  (= (:v d) v)
+                                                                  (<= (eid/eid->t (:tx d)) until)))
+                                                           hist)
+                                                   (map (comp eid/eid->t :tx))
+                                                   (apply max))
                                    now (let [vs (current-values current-datoms e a)]
                                          (cond
                                            (empty? vs) nil
                                            (contains? many-attrs a) (set vs)
                                            :else (first vs)))]
-                               {:entity (render-entity ident-map e)
-                                :attr a
-                                :was (render-value ref-attrs ident-map a v)
-                                :asserted asserted
-                                :until until
-                                :now (render-value ref-attrs ident-map a now)}))))))
+                                 {:entity (render-entity ident-map e)
+                                  :attr a
+                                  :was (render-value ref-attrs ident-map a v)
+                                  :asserted asserted
+                                  :until until
+                                  :now (render-value ref-attrs ident-map a now)})))))))
        (sort-by (juxt :entity :attr))
        vec))
 

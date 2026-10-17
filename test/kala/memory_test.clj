@@ -176,7 +176,8 @@
 
 (deftest reserved-attrs-cannot-be-written-through-record
   (let [conn (ready-conn)
-        s (memory/session conn {:id "main"})]
+        s (memory/session conn {:id "main"})
+        proj (api/entid (api/db conn) :proj/kala)]
     (install-config! conn)
     (testing "an op vector cannot re-attribute the turn"
       (assert-error :memory/reserved-attr
@@ -192,6 +193,17 @@
     (testing "a reverse-ref spelling is refused too"
       (assert-error :memory/reserved-attr
         (memory/record conn s [{:db/id "x" :memory/_session 123}])))
+    (testing "the write surface is data-only — an allowlist, not a case list"
+      (let [t-head (api/db-t (api/db conn))]
+        (assert-error :memory/data-only
+          (memory/record conn s [[:db.fn/retractEntity proj]]))
+        (assert-error :memory/data-only
+          (memory/record conn s [[:db/retractEntity proj]]))
+        (assert-error :memory/data-only
+          (memory/record conn s [[:db.fn/call :proj/some-fn 1]]))
+        (assert-error :memory/data-only
+          (memory/record conn s [[:proj/some-fn 1]]))
+        (is (= t-head (api/db-t (api/db conn))) "refused ops land nothing")))
     (testing "nothing from a refused record lands"
       (is (nil? (ffirst (api/q '[:find ?e :in $ :where [?e :memory.session/id "forged"]]
                                (api/db conn))))))))

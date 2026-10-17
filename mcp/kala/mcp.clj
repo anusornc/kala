@@ -102,11 +102,18 @@
                    pattern (assoc :pattern (edn-arg! "read" :pattern pattern))
                    as-of (assoc :as-of (opt-long! as-of))))))
 
+(defn- scope-arg!
+  "The scope is a scalar in the JSON sense — \"entity\" or \":entity\"
+  both mean :entity (the keyword spelling is accepted for the EDN-minded)."
+  [v]
+  (when-not (string? v) (bad-arg! "history" :scope "must be a string"))
+  (keyword (str/replace-first v #"^:" "")))
+
 (defn- tool-history
   [state {:keys [scope entity session-id attrs from-t to-t as-of limit]}]
   (when (nil? scope) (bad-arg! "history" :scope "is required (:entity or :session)"))
   (memory/history (db state)
-                  (cond-> {:scope (edn-arg! "history" :scope scope)}
+                  (cond-> {:scope (scope-arg! scope)}
                     entity (assoc :entity (opt-long! entity))
                     session-id (assoc :session session-id)
                     attrs (assoc :attrs (edn-arg! "history" :attrs attrs))
@@ -152,7 +159,7 @@
                           :props {"query" {:type "string" :description "EDN query, e.g. \"[:find ?v :in $ ?e :where [?e :proj/deploy-command ?v]]\""}
                                   "args" {:type "string" :description "EDN vector binding the :in symbols after $, e.g. \"[:proj/kala]\""}
                                   "as-of" {:type "integer" :description "t to read against"}
-                                  "limit" {:type "integer" :description "max rows (default 100, ceiling 1000)"}}})}
+                                  "limit" {:type "integer" :description "max solutions (default 100, ceiling 1000)"}}})}
    {:name "read"
     :description "Read one entity: its attributes as a document, current or as-of t. All or nothing — an over-size read refuses with a narrower-pattern hint."
     :inputSchema (schema {:required [:entity]
@@ -164,7 +171,7 @@
     :inputSchema (schema {:required [:scope]
                           :props {"scope" {:type "string" :description "EDN keyword: :entity or :session"}
                                   "entity" {:type "integer" :description "entity id (for :entity scope)"}
-                                  "session-id" {:type "string" :description "session id (for :session scope; default any named session)"}
+                                  "session-id" {:type "string" :description "session id (required for :session scope)"}
                                   "attrs" {:type "string" :description "EDN collection narrowing :entity scope to attributes"}
                                   "from-t" {:type "integer" :description "inclusive lower t bound"}
                                   "to-t" {:type "integer" :description "inclusive upper t bound"}
@@ -217,11 +224,18 @@
       (let [{:keys [name arguments]} params]
         (if-some [tool (get tool-table name)]
           (let [{:keys [isError content]}
-                (try
-                  {:content [{:type "text" :text (pr-str (tool state (or arguments {})))}]}
-                  (catch clojure.lang.ExceptionInfo e
-                    {:isError true
-                     :content [{:type "text" :text (pr-str (error-data e))}]}))]
+              (try
+                {:content [{:type "text" :text (pr-str (tool state (or arguments {})))}]}
+                (catch clojure.lang.ExceptionInfo e
+                  {:isError true
+                   :content [{:type "text" :text (pr-str (error-data e))}]})
+                ;; anything else — a bad scalar type, a slip in the server —
+                ;; is a tool failure, never a reason for the server to die
+                (catch Throwable t
+                  {:isError true
+                   :content [{:type "text"
+                              :text (pr-str {:kala/error :mcp/error
+                                             :message (.getMessage t)})}]}))]
             (rpc-result id (cond-> {:content content} isError (assoc :isError true))))
           (rpc-error id -32602 (str "Unknown tool: " name))))
       (rpc-error id -32601 "Method not found"))))
