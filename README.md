@@ -17,8 +17,10 @@ landed; the roadmap lives in the issue tracker.
 ```bash
 clojure -M:test          # full matrix: {peer, client} x {memory, file} + backend suites
 e2e.sh                   # project E2E: transactor SIGKILL crash-recovery over real
-                         #   processes, release jar, demo, web demo (all|transactor|release|demo|web)
+                         #   processes, release jar, demo, web demo, MCP server
+                         #   (all|transactor|release|demo|web|mcp)
 clojure -T:build jar     # build the release jar (EPL-1.0 notices included)
+clojure -T:build mcp-jar # build the kala-mcp server artifact (separate jar)
 ```
 
 The behavioral suite runs twice per cycle — peer (embedded) and client (remote, over the wire against a live transactor) — on both storage backends, which is what enforces access-mode and storage-backend parity. Entity navigation and seek scans are peer-only; clients use pull. Tests run at two seams: the behavioral API suite and the storage-protocol contract suite per adapter.
@@ -54,6 +56,57 @@ the raw datoms and the full history, then hit **Reopen from disk** and watch
 every acked transaction survive. EDN in, EDN out — responses carry pr-str'd
 values. The server binds 127.0.0.1; tx-data is read with clojure.edn (same
 documented no-sandboxing posture as ADR-0004).
+
+## Memory for agents
+
+Kala ships a memory layer (`kala.memory`, inside the core jar) and an MCP
+server (`kala.mcp`, its own artifact) that exposes it to any agent harness.
+
+The vocabulary is the domain's: **memory** is agent-run knowledge held as
+datoms under a three-ident provenance **spine**; a **session** is one run
+recording memory; a **turn** is exactly one transaction; and the **context
+document** is the belief-state map an LLM reads. One turn = one transaction,
+attributed to its session by tx-meta — provenance holds by construction,
+because the layer writes the attribution, never the caller.
+
+```clojure
+(require '[kala.api :as api] '[kala.memory :as memory])
+(def conn (api/connect {:storage :file :path "/var/data/agent-memory"}))
+(memory/install conn)                          ; idempotent: the spine
+(def s (memory/session conn {:id "run-42"}))   ; resume by id, upsert
+(memory/record conn s [[:db/add "p" :proj/deploy-command "make deploy"]])
+; => {:t 60, :turn 1, :tx 9700001, :tempids {"p" 12}, :datoms 3}
+
+(memory/context (api/db conn) {:cap 5})        ; the belief-state document
+(memory/turns (api/db conn) "run-42" {})       ; step N -> t, then read as-of t
+```
+
+Reads are the doors — `query` (Datalog, joins included), `pull`, `history`
+(entity and session scopes), `turns` — every one addressable `:as-of t`,
+every list capped with the cap visible (`:truncated`), because a silently
+shortened answer would misstate what the agent believed. Corrections are
+data: a cardinality-one re-assertion supersedes the old belief into history,
+and `context`'s `:corrections` section shows the full trail of the entities
+it shows you.
+
+### MCP server
+
+```bash
+echo '{:conn {:storage :file :path "/var/data/agent-memory"}
+       :session "my-agent"}' > mcp.edn
+clojure -M:mcp mcp.edn
+```
+
+Six tools over stdio, JSON-RPC: `context` (call this first — the capped,
+correction-annotated belief state), `record` (one turn; the server owns the
+session, so tx-data carries no attribution), `recall` (Datalog with joins),
+`read` (one entity, current or as-of), `history` (correction/provenance
+trails), `turns` ("step 12" becomes a t). EDN in, EDN out — arguments that
+carry structure are EDN strings, results are readable EDN, and errors are
+the store's own error maps under the MCP `isError` flag. The harness→server
+hop is same-user local; when the server reaches a remote transactor it
+authenticates with the shared token like any client (see
+[ADR-0006](docs/adr/0006-shared-token-auth-tls-by-termination.md)).
 
 ## Benchmark
 
@@ -125,6 +178,8 @@ project/web E2E journeys on every push and PR.
 | peer | Embedded library: local indexes and queries, writes in-process through the storage log |
 | client | Remote library: same operation surface, served through the transactor |
 | wire-protocol | Open, versioned, EDN-over-TCP protocol between peers/clients and the transactor |
+| memory | Agent memory: the provenance spine, one-turn-one-transaction ingestion, capped read doors, the context document |
+| mcp | The memory layer as an MCP server: six tools over stdio, separate artifact |
 
 ## Constraints (v1, by design)
 

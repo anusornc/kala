@@ -11,6 +11,9 @@
 #                       #   and the bench/demo/web exclusion guarantee
 #   e2e.sh demo         # the asserted walkthrough: clojure -M:demo
 #   e2e.sh web          # the web demo's API E2E: web/e2e.sh
+#   e2e.sh mcp          # the MCP server over stdio: record a turn, SIGKILL
+#                       #   the server, restart on the same session id, and
+#                       #   prove durability and session resume
 #
 # Exits nonzero if any requested journey fails.
 
@@ -144,12 +147,99 @@ journey_release() {
               "META-INF/maven/" "LICENSE"; do
     if grep -q "$want" <<<"$contents"; then ok "jar carries $want"; else bad "jar missing $want"; fi
   done
-  for forbid in "^bench/" "kala/web" "kala/demo" "kala/e2e"; do
+  if grep -q "kala/memory.clj" <<<"$contents"; then ok "jar carries kala/memory.clj"; else
+    bad "jar missing kala/memory.clj"
+  fi
+  for forbid in "^bench/" "kala/web" "kala/demo" "kala/e2e" "kala/mcp"; do
     if grep -q "$forbid" <<<"$contents"; then bad "jar must not carry $forbid"; else
       ok "jar excludes $forbid"
     fi
   done
   rm -f "$JAR"
+
+  # the MCP artifact: server + its codec, never the core
+  if RELEASE_VERSION=$VERSION clojure -T:build mcp-jar >/dev/null 2>&1; then
+    ok "mcp artifact builds"
+  else
+    bad "mcp artifact build failed"
+    return 1
+  fi
+  local MCP_JAR mcp_contents mcp_pom
+  MCP_JAR="target/kala-mcp-$VERSION.jar"
+  if [ -f "$MCP_JAR" ]; then ok "mcp artifact exists at $MCP_JAR"; else bad "mcp jar missing"; return 1; fi
+  mcp_contents=$(jar tf "$MCP_JAR")
+  for want in "kala/mcp.clj" "META-INF/maven/" "LICENSE"; do
+    if grep -q "$want" <<<"$mcp_contents"; then ok "mcp artifact carries $want"; else
+      bad "mcp artifact missing $want"
+    fi
+  done
+  for forbid in "kala/api.clj" "kala/memory.clj"; do
+    if grep -q "$forbid" <<<"$mcp_contents"; then bad "mcp artifact must not carry $forbid"; else
+      ok "mcp artifact excludes $forbid (kala comes from the dependency)"
+    fi
+  done
+  if mcp_pom=$(unzip -p "$MCP_JAR" "META-INF/maven/io.github.anusornc/kala-mcp/pom.xml" 2>/dev/null) &&
+    grep -q "io.github.anusornc" <<<"$mcp_pom" && grep -q "data.json" <<<"$mcp_pom"; then
+    ok "mcp artifact pom declares kala and its codec"
+  else
+    bad "mcp artifact pom does not declare its dependencies"
+  fi
+  rm -f "$MCP_JAR"
+}
+
+# ---- journey: mcp server over stdio -----------------------------------------------
+# A real server process, a real file store, a real session: record a turn,
+# SIGKILL the server mid-life, restart on the same session id, and prove the
+# resumed session's next turn is ordinal 2 — durability and resume in one go.
+
+journey_mcp() {
+  local DIR SRV waited
+  DIR=$(mktemp -d /tmp/kala-mcp-e2e-XXXXXX)
+  cat > "$DIR/mcp.edn" <<EOF
+{:conn {:storage :file :path "$DIR/store"}
+ :session "journey-7"}
+EOF
+
+  # turn 1: the vocabulary only — the schema registry derives after a
+  # transaction's op pass, so a fresh attribute is usable from the next
+  # turn on. The server's stdin is held open so the SIGKILL lands mid-life.
+  mkfifo "$DIR/in"
+  clojure -M:mcp "$DIR/mcp.edn" >"$DIR/out" 2>>"$DIR/server.log" <"$DIR/in" &
+  SRV=$!
+  exec 9>"$DIR/in"
+  printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"record","arguments":{"tx-data":"[[:db/add \"note-attr\" :db/ident :proj/note] [:db/add \"note-attr\" :db/valueType :db.type/string] [:db/add \"note-attr\" :db/cardinality :db.cardinality/one]]"}}}' >&9
+  waited=0
+  while ! grep -q '"id":2' "$DIR/out" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 60 ]; then
+      bad "mcp server never answered the record"
+      exec 9>&-; kill -9 "$SRV" 2>/dev/null
+      tail -5 "$DIR/server.log"
+      return 1
+    fi
+    sleep 1
+  done
+  kill -9 "$SRV" 2>/dev/null
+  wait "$SRV" 2>/dev/null
+  SRV=""
+  exec 9>&-
+  ok "mcp server recorded a turn and was SIGKILLed mid-life"
+
+  # session 2: the same session id resumes; the vocabulary survived the
+  # kill, so the resumed session's first fact is turn 2
+  run_expect "restarted server: same session resumes, next turn is ordinal 2" \
+    ":turn 2" bash -c "printf '%s\n' \
+      '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"record\",\"arguments\":{\"tx-data\":\"[[:db/add \\\"p\\\" :proj/note \\\"journey\\\"]]\"}}}' \
+      | clojure -M:mcp '$DIR/mcp.edn' 2>>'$DIR/server.log'" \
+    || { echo "storage kept for debugging: $DIR"; return 1; }
+
+  run_expect "restarted server: the context document carries the durable fact" \
+    "journey" bash -c "printf '%s\n' \
+      '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"context\",\"arguments\":{\"cap\":10}}}' \
+      | clojure -M:mcp '$DIR/mcp.edn' 2>>'$DIR/server.log'" \
+    || { echo "storage kept for debugging: $DIR"; return 1; }
+
+  rm -rf "$DIR"
 }
 
 # ---- journeys: demo and web ------------------------------------------------------
@@ -169,14 +259,16 @@ case "$JOURNEY" in
   release) journey_release ;;
   demo) journey_demo ;;
   web) journey_web ;;
+  mcp) journey_mcp ;;
   all)
     journey_transactor
     journey_release
     journey_demo
     journey_web
+    journey_mcp
     ;;
   *)
-    echo "unknown journey: $JOURNEY (use all|transactor|release|demo|web)"
+    echo "unknown journey: $JOURNEY (use all|transactor|release|demo|web|mcp)"
     exit 2
     ;;
 esac

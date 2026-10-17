@@ -10,6 +10,43 @@
 (def basis (b/create-basis {:project "deps.edn"}))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 
+;; The MCP server ships as its own artifact so the core jar gains no
+;; dependency: kala-mcp carries mcp/ plus its one codec dependency and
+;; declares io.github.anusornc/kala (same release train, same version).
+(def mcp-lib 'io.github.anusornc/kala-mcp)
+(def mcp-class-dir "target/mcp-classes")
+(def mcp-jar-file (format "target/%s-%s.jar" (name mcp-lib) version))
+
+(defn- licenses-pom-data []
+  [[:description "The kala memory layer as an MCP server: six tools over stdio — context, record, recall, read, history, turns."]
+   [:url "https://github.com/anusornc/kala"]
+   [:licenses
+    [:license
+     [:name "Eclipse Public License - v 1.0"]
+     [:url "https://www.eclipse.org/legal/epl-v10.html"]]]
+   [:scm [:url "https://github.com/anusornc/kala"]
+    [:connection "scm:git:git://github.com/anusornc/kala.git"]
+    [:developerConnection "scm:git:ssh://git@github.com/anusornc/kala.git"]]
+   [:dependencies
+    [:dependency
+     [:groupId "io.github.anusornc"]
+     [:artifactId "kala"]
+     [:version version]]]])
+
+(defn mcp-jar [_]
+  (b/delete {:path mcp-class-dir})
+  (b/write-pom
+   {:class-dir mcp-class-dir
+    :lib mcp-lib
+    :version version
+    :basis (b/create-basis {:project "deps.edn" :aliases [:mcp]})
+    :src-dirs ["mcp"]
+    :pom-data (licenses-pom-data)})
+  (b/copy-dir {:src-dirs ["mcp"] :target-dir mcp-class-dir})
+  (b/copy-file {:src "LICENSE" :target (str mcp-class-dir "/LICENSE")})
+  (b/jar {:class-dir mcp-class-dir :jar-file mcp-jar-file})
+  (println "Built" mcp-jar-file))
+
 (defn clean [_]
   (b/delete {:path "target"})
   (println "Cleaned target/"))
