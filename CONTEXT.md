@@ -64,6 +64,10 @@ _Avoid_: memory schema, provenance schema
 The step index of one session: ordered [t, turn ordinal, txInstant] triples, one per turn. It is how "step 12" becomes a t; the context document keeps its txInstant out.
 _Avoid_: session log, turn table
 
+**context document**:
+One readable-EDN belief-state map assembled for an LLM: :current content capped in facts, :corrections the trail of the entities shown, :turns the [t, turn] pairs — everything read as of one t, never carrying a wall clock.
+_Avoid_: prompt, summary, pull doc
+
 ### Schema
 
 **attribute**:

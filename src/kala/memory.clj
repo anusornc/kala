@@ -12,7 +12,8 @@
   connection or a client connection from kala.client. Errors ride the
   library-wide :kala/error contract with :memory/* kinds; they are raised
   in the caller's process and never cross the wire."
-  (:require [kala.api :as api]
+  (:require [clojure.string :as str]
+            [kala.api :as api]
             [kala.core :as core]
             [kala.eid :as eid]))
 
@@ -217,12 +218,17 @@
   [db {:keys [as-of]}]
   (if (some? as-of) (api/as-of db as-of) db))
 
-(defn- opt-limit!
-  [limit]
-  (when (some? limit)
-    (when-not (pos-int? limit)
-      (core/err :memory/bad-option ":limit must be a positive integer" {:limit limit})))
-  (min (or limit default-limit) max-limit))
+(defn- opt-int!
+  "A positive-integer option, clamped to its ceiling — every budget knob
+  in the layer behaves the same way: absent means the default, above the
+  ceiling means the ceiling, garbage means :memory/bad-option."
+  [k v default ceiling]
+  (when (some? v)
+    (when-not (pos-int? v)
+      (core/err :memory/bad-option
+                (str (subs (str k) 1) " must be a positive integer")
+                {k v})))
+  (min (or v default) ceiling))
 
 (defn- opt-t!
   [k v]
@@ -258,7 +264,7 @@
   pass through uncapped. kala's own error kinds surface verbatim."
   [db query-form {:keys [args as-of limit] :or {args []}}]
   (let [db (pin-db db {:as-of as-of})
-        limit (opt-limit! limit)
+        limit (opt-int! :limit limit default-limit max-limit)
         result (if (seq args)
                  (apply api/q query-form db args)
                  (api/q query-form db))]
@@ -307,7 +313,7 @@
   by inclusive :from-t/:to-t. Capped like query."
   [db {:keys [scope entity session attrs from-t to-t as-of limit]}]
   (let [db (pin-db db {:as-of as-of})
-        limit (opt-limit! limit)
+        limit (opt-int! :limit limit default-limit max-limit)
         _ (opt-t! :from-t from-t)
         _ (opt-t! :to-t to-t)
         entries (->> (case scope
@@ -354,7 +360,7 @@
   does not."
   [db session {:keys [as-of limit]}]
   (let [db (pin-db db {:as-of as-of})
-        limit (opt-limit! limit)
+        limit (opt-int! :limit limit default-limit max-limit)
         s-eid (or (session-entity-id db session)
                   (core/err :memory/unknown-session
                             "No session carries this handle"
@@ -372,3 +378,169 @@
                        vec)
                   limit)]
     {:session sid :turns result :truncated truncated}))
+
+;; ---- the context document ------------------------------------------------------
+
+(def ^:private default-cap 50)
+(def ^:private max-cap "The hard ceiling a caller's :cap clamps to." 500)
+
+(defn- reserved-attr-ns?
+  "The db and memory namespaces belong to the machinery; a fact of memory
+  is the developer's vocabulary. (Avoid: fact — this predicate names the
+  boundary, the glossary names the content.)"
+  [a]
+  (let [ns (namespace a)]
+    (or (= ns "db")
+        (= ns "memory")
+        (str/starts-with? (or ns "") "memory."))))
+
+(defn- ident-map
+  "Every ident-bearing entity — the map that lets a document name entities
+  the way a person would."
+  [db]
+  (into {} (map (fn [[e i]] [e i]))
+        (api/q '[:find ?e ?i :where [?e :db/ident ?i]] db)))
+
+(defn- ref-attr-idents
+  "The idents whose values are references — the ones a document may name."
+  [db]
+  (if-some [ref-eid (api/entid db :db.type/ref)]
+    (into #{}
+          (map (fn [[a]] (get (ident-map db) a a)))
+          (api/q '[:find ?a :in $ ?vt :where [?a :db/valueType ?vt] [?a :db/ident _]]
+                 db ref-eid))
+    #{}))
+
+(defn- card-many-idents
+  "The idents whose values accumulate — a set-valued :now stays a set
+  even when one value remains."
+  [db]
+  (if-some [many-eid (api/entid db :db.cardinality/many)]
+    (let [im (ident-map db)]
+      (into #{}
+            (map (fn [[a]] (get im a a)))
+            (api/q '[:find ?a :in $ ?c :where [?a :db/cardinality ?c] [?a :db/ident _]]
+                   db many-eid)))
+    #{}))
+
+(defn- head-t
+  "The db's t, read off its datoms so the document can state its own pin
+  in both access modes (a client db is a lazy marker; its datoms are not)."
+  [datoms]
+  (reduce (fn [acc d] (max acc (eid/eid->t (:tx d)))) core/bootstrap-t datoms))
+
+(defn- render-entity [ident-map e] (get ident-map e e))
+
+(defn- render-value
+  [ref-attrs ident-map a v]
+  (if (and (contains? ref-attrs a) (contains? ident-map v))
+    (get ident-map v)
+    v))
+
+(defn- doc-turns
+  "Every session's [t turn] pairs — the step index without the wall clock."
+  [db]
+  (->> (api/q '[:find ?sid ?tx :where [?tx :memory/session ?s]
+                                       [?s :memory.session/id ?sid]] db)
+       (group-by first)
+       (map (fn [[sid rows]]
+              [sid (->> rows
+                        (map second)
+                        (map eid/eid->t)
+                        (sort)
+                        (map-indexed (fn [i t] [t (inc i)]))
+                        vec)]))
+       (into {})))
+
+(defn- current-values
+  [current-datoms e a]
+  (->> current-datoms
+       (filter (fn [d] (and (= (:e d) e) (= (:a d) a))))
+       (map :v)
+       distinct
+       vec))
+
+(defn- correction-entries
+  "The full trail of the shown entities: for every retracted value, where
+  it came from and what holds now. :asserted/:until are log coordinates —
+  the assertion's t and the retraction's t; :now is the attribute's
+  current value (a set for cardinality-many, nil when nothing holds)."
+  [db t ident-map ref-attrs many-attrs current-datoms shown-entities]
+  (->> shown-entities
+       (sort)
+       (mapcat (fn [e]
+                 (->> (filter (fn [d] (<= (eid/eid->t (:tx d)) t))
+                              (api/datoms (api/history db) :eavt [e]))
+                      (filter (fn [d] (false? (:added d))))
+                      (sort-by (comp eid/eid->t :tx))
+                      (map (fn [r]
+                             (let [a (:a r)
+                                   v (:v r)
+                                   until (eid/eid->t (:tx r))
+                                   asserted (->> (filter (fn [d]
+                                                           (and (:added d)
+                                                                (= (:a d) a)
+                                                                (= (:v d) v)
+                                                                (<= (eid/eid->t (:tx d)) until)))
+                                                         (api/datoms (api/history db) :eavt [e]))
+                                                 (map (comp eid/eid->t :tx))
+                                                 (apply max))
+                                   now (let [vs (current-values current-datoms e a)]
+                                         (cond
+                                           (empty? vs) nil
+                                           (contains? many-attrs a) (set vs)
+                                           :else (first vs)))]
+                               {:entity (render-entity ident-map e)
+                                :attr a
+                                :was (render-value ref-attrs ident-map a v)
+                                :asserted asserted
+                                :until until
+                                :now (render-value ref-attrs ident-map a now)}))))))
+       (sort-by (juxt :entity :attr))
+       vec))
+
+(defn context
+  "The context document — one readable-EDN belief-state map, the thing a
+  harness stuffs into a prompt:
+
+     (context db {:cap 5 :as-of 43})
+
+  :current is memory's content, newest first, capped in facts (:cap,
+  default 50, ceiling 500); over cap, :truncated names the dropped
+  attributes and never re-lists their values. :corrections is the full
+  trail of the entities shown — superseded values and retractions,
+  :now nil when retraction resolved them; :corrections? false omits the
+  section. :turns is every session's [t turn] pairs, bounded at the pin.
+  The document is store-wide (sessions are provenance, not partitions)
+  and never carries a wall clock."
+  [db {:keys [as-of cap corrections?] :or {corrections? true}}]
+  (let [db (pin-db db {:as-of as-of})
+        cap (opt-int! :cap cap default-cap max-cap)
+        all (api/datoms db :eavt [])
+        t (head-t all)
+        ident-map (ident-map db)
+        ref-attrs (ref-attr-idents db)
+        many-attrs (card-many-idents db)
+        content (->> all
+                     (remove (fn [d] (reserved-attr-ns? (:a d))))
+                     (remove (fn [d] (eid/tx-eid? (:e d))))
+                     (sort-by (fn [d] (- (eid/eid->t (:tx d)))))
+                     vec)
+        shown (vec (take cap content))
+        dropped (- (count content) (count shown))
+        shown-entities (vec (distinct (map :e shown)))
+        current-datoms content]
+    (cond-> {:as-of t
+             :truncated (if (pos? dropped)
+                          {:capped? true :shown (count shown) :dropped dropped :cap cap
+                           :dropped-attrs (vec (distinct (map :a (drop cap content))))}
+                          {:capped? false})
+             :current (mapv (fn [d]
+                              [(render-entity ident-map (:e d))
+                               (:a d)
+                               (render-value ref-attrs ident-map (:a d) (:v d))])
+                            shown)
+             :turns (doc-turns db)}
+      corrections? (assoc :corrections
+                          (correction-entries db t ident-map ref-attrs many-attrs
+                                              current-datoms shown-entities)))))

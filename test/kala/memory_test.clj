@@ -3,7 +3,8 @@
    exactly as a downstream program (or the MCP server) would. Runs in the
    full {peer, client} x {memory, file} matrix, which is what enforces
    access-mode parity for every memory function."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
             [kala.memory :as memory]
             [kala.test-util :refer [assert-error fresh-conn]]))
@@ -320,3 +321,123 @@
       (assert-error :memory/unknown-session (memory/turns db "nope" {})))
     (testing "bad options raise"
       (assert-error :memory/bad-option (memory/turns db "main" {:limit 0})))))
+
+;; ---- the context document -----------------------------------------------------
+
+(defn install-proj-vocab! [conn]
+  (api/transact conn
+                [[:db/add "dc" :db/ident :proj/deploy-command]
+                 [:db/add "dc" :db/valueType :db.type/string]
+                 [:db/add "dc" :db/cardinality :db.cardinality/one]
+                 [:db/add "tc" :db/ident :proj/test-command]
+                 [:db/add "tc" :db/valueType :db.type/string]
+                 [:db/add "tc" :db/cardinality :db.cardinality/one]
+                 [:db/add "al" :db/ident :proj/alias]
+                 [:db/add "al" :db/valueType :db.type/string]
+                 [:db/add "al" :db/cardinality :db.cardinality/many]
+                 [:db/add "proj" :db/ident :proj/kala]]))
+
+(defn context-fixture! [conn]
+  (install-proj-vocab! conn)
+  (memory/install conn)
+  (let [proj (api/entid (api/db conn) :proj/kala)
+        s16 (memory/session conn {:id "s16"})
+        s17 (memory/session conn {:id "s17"})
+        r1 (memory/record conn s16 [[:db/add proj :proj/deploy-command "v1"]])
+        r2 (memory/record conn s16 [[:db/add proj :proj/test-command "clojure -M:test"]])
+        r3 (memory/record conn s16 [[:db/add proj :proj/alias "a1"]
+                                    [:db/add proj :proj/alias "a2"]])
+        r4 (memory/record conn s17 [[:db/add proj :proj/deploy-command "v2"]])
+        r5 (memory/record conn s17 [[:db/retract proj :proj/alias "a1"]])]
+    {:proj proj :s16 s16 :s17 s17
+     :ts [(:t r1) (:t r2) (:t r3) (:t r4) (:t r5)]
+     :head (:t r5)}))
+
+(deftest context-document-assembles-the-belief-state
+  (let [conn (fresh-conn)
+        {:keys [proj head ts]} (context-fixture! conn)
+        [t1 t2 t3 t4 t5] ts
+        doc (memory/context (api/db conn) {})]
+    (testing "the document states its own pin"
+      (is (= head (:as-of doc))))
+    (testing ":current is content, newest first, entities named by ident"
+      (is (= [[:proj/kala :proj/deploy-command "v2"]   ;; t4
+              [:proj/kala :proj/alias "a2"]            ;; t3 survivor
+              [:proj/kala :proj/test-command "clojure -M:test"]] ;; t2
+             (:current doc))
+          "the corrected v1 and the retracted a1 are not current"))
+    (testing ":corrections is the full trail of the shown entity"
+      (is (= [{:entity :proj/kala :attr :proj/alias
+               :was "a1" :asserted t3 :until t5 :now #{"a2"}}
+              {:entity :proj/kala :attr :proj/deploy-command
+               :was "v1" :asserted t1 :until t4 :now "v2"}]
+             (:corrections doc))
+          "sorted by entity then attr; a card-many :now stays a set"))
+    (testing ":turns pairs every session, bounded at the pin"
+      (is (= {"s16" [[t1 1] [t2 2] [t3 3]]
+              "s17" [[t4 1] [t5 2]]}
+             (:turns doc))))
+    (testing "no wall clock anywhere in the document"
+      (is (not (re-find #"#inst" (pr-str doc)))))
+    (testing "machinery stays out: no db/memory namespaces, no tx entities"
+      (is (every? (fn [[e a]]
+                    (and (not= "db" (namespace a))
+                         (not= "memory" (namespace a))
+                         (not (str/starts-with? (namespace a) "memory."))))
+                  (:current doc)))
+      (is (not-any? #(= :proj/note (% 1)) (:current doc))
+          "tx-meta lives on the turn entity, not in the document"))))
+
+(deftest context-as-of-pins-every-section
+  (let [conn (fresh-conn)]
+    (install-proj-vocab! conn)
+    (memory/install conn)
+    (let [proj (api/entid (api/db conn) :proj/kala)
+        s (memory/session conn {:id "s"})
+        r1 (memory/record conn s [[:db/add proj :proj/deploy-command "v1"]])
+        t1 (:t r1)
+        _ (memory/record conn s [[:db/add proj :proj/deploy-command "v2"]])
+        doc (memory/context (api/db conn) {:as-of t1})]
+    (testing "the pin reads through the whole document"
+      (is (= t1 (:as-of doc)))
+      (is (= [[:proj/kala :proj/deploy-command "v1"]] (:current doc)))
+      (is (= [] (:corrections doc)) "nothing superseded as-of t1")
+      (is (= {"s" [[t1 1]]} (:turns doc)) "the turn listing is bounded too")))))
+
+(deftest context-options-behave
+  (let [conn (fresh-conn)
+        _ (install-proj-vocab! conn)
+        _ (memory/install conn)
+        proj (api/entid (api/db conn) :proj/kala)
+        s (memory/session conn)
+        _ (dotimes [i 3]
+            (memory/record conn s [[:db/add proj :proj/alias (str "v" i)]]))
+        db (api/db conn)]
+    (testing ":cap truncates visibly, naming dropped attributes in drop order"
+      (let [{:keys [current truncated]} (memory/context db {:cap 1})]
+        (is (= 1 (count current)))
+        (is (= {:capped? true :shown 1 :dropped 2 :cap 1
+                :dropped-attrs [:proj/alias]}
+               truncated)
+            "all drops share one attribute here")))
+    (testing ":corrections? false omits the section entirely"
+      (is (not (contains? (memory/context db {:corrections? false}) :corrections)))
+      (is (contains? (memory/context db {}) :corrections)))
+    (testing "a garbage cap raises"
+      (assert-error :memory/bad-option (memory/context db {:cap 0})))))
+
+(deftest context-corrections-cover-retractions-and-sets
+  (let [conn (fresh-conn)
+        _ (install-proj-vocab! conn)
+        _ (memory/install conn)
+        proj (api/entid (api/db conn) :proj/kala)
+        s (memory/session conn)
+        r1 (memory/record conn s [[:db/add proj :proj/alias "keep"]
+                                  [:db/add proj :proj/alias "gone"]])
+        t-add (:t r1)
+        r2 (memory/record conn s [[:db/retract proj :proj/alias "gone"]])
+        doc (memory/context (api/db conn) {})]
+    (testing "a retracted card-many value trails with the survivors as :now"
+      (is (= [{:entity :proj/kala :attr :proj/alias
+               :was "gone" :asserted t-add :until (:t r2) :now #{"keep"}}]
+             (:corrections doc))))))
