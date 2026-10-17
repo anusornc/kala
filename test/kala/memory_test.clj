@@ -453,3 +453,28 @@
       (is (= [{:entity :proj/kala :attr :proj/alias
                :was "gone" :asserted t-add :until (:t r2) :now #{"keep"}}]
              (:corrections doc))))))
+
+;; ---- citation coordinate (issue #51) -------------------------------------------
+
+(deftest memory-source-citations-must-carry-the-tx-entity-id
+  (let [conn (ready-conn)
+        s (memory/session conn)
+        r1 (memory/record conn s [[:db/add "p" :proj/name "v1"]])
+        good-tx (:tx r1)]
+    (testing "citing with the turn's t is refused — that is the #51 trap"
+      (assert-error :memory/bad-source
+        (memory/record conn s [[:db/add "q" :memory/source (:t r1)]])))
+    (testing "citing a nonexistent id is refused"
+      (assert-error :memory/bad-source
+        (memory/record conn s [[:db/add "q" :memory/source 999999]])))
+    (testing "citing the tx entity id lands"
+      (let [r (memory/record conn s [[:db/add "q" :memory/source good-tx]])]
+        (is (= [good-tx] (:memory/source
+                          (api/pull (api/db conn) '[:memory/source]
+                                    (get (:tempids r) "q")))))))
+    (testing "retraction citations validate too"
+      (assert-error :memory/bad-source
+        (memory/record conn s [[:db/retract "q" :memory/source 7]])))
+    (testing "map-form citations validate too"
+      (assert-error :memory/bad-source
+        (memory/record conn s [{:db/id "q" :memory/source (:t r1)}])))))

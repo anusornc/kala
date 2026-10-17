@@ -565,3 +565,31 @@
       (testing "the runaway transaction committed nothing"
         (is (= (+ t-before 1)
                (:t (api/transact conn [[:db/add "m2" :t/plain "b"]]))))))))
+
+;; ---- ADR-0007: schema ops apply first within a transaction ---------------------
+
+(deftest fresh-vocabulary-is-usable-in-the-same-transaction
+  (let [conn (fresh-conn)]
+    (testing "an attribute registers and applies in one turn (list form)"
+      (let [{:keys [tempids]} 
+            (api/transact conn
+                          [[:db/add "prio" :db/ident :task/priority]
+                           [:db/add "prio" :db/valueType :db.type/long]
+                           [:db/add "prio" :db/cardinality :db.cardinality/one]
+                           [:db/add "t" :task/priority 3]])
+            eid (get tempids "t")]
+        (is (pos? eid))
+        (is (= 3 (:v (first (api/datoms (api/db conn) :eavt [eid :task/priority])))))))
+    (testing "map form too — even with the data entity written FIRST"
+      (let [{:keys [tempids]}
+            (api/transact conn
+                          [{:db/id "t" :task/tag "ops"}
+                           {:db/id "tag" :db/ident :task/tag}
+                           {:db/id "tag" :db/valueType :db.type/string}
+                           {:db/id "tag" :db/cardinality :db.cardinality/one}])
+            eid (get tempids "t")]
+        (is (pos? eid))
+        (is (= "ops" (:v (first (api/datoms (api/db conn) :eavt [eid :task/tag])))))))
+    (testing "the registry survives reopen (replay re-derives in phase order)"
+      (is (pos? (api/entid (api/db conn) :task/priority)))
+      (is (pos? (api/entid (api/db conn) :task/tag))))))

@@ -5,7 +5,7 @@
             [kala.api :as api]
             [kala.eid :as eid]
             [kala.storage.memory :as memory]
-            [kala.test-util :refer [fresh-conn]]))
+            [kala.test-util :refer [assert-error fresh-conn]]))
 
 (defn install-person-schema! [conn]
   (api/transact conn
@@ -229,3 +229,49 @@
       (let [conn2 (api/connect {:storage s})]
         (is (= ["Alice"] (mapv :v (api/datoms (api/db conn2)
                                               :aevt [(api/entid (api/db conn2) :person/name)]))))))))
+
+;; ---- lookup refs -------------------------------------------------------------
+
+(deftest lookup-refs-resolve-and-refuse
+  (let [conn (fresh-conn)]
+    (install-person-schema! conn)
+    (api/transact conn [[:db/add "fr" :db/ident :person/email]
+                        [:db/add "fr" :db/valueType :db.type/string]
+                        [:db/add "fr" :db/cardinality :db.cardinality/one]
+                        [:db/add "fr" :db/unique :db.unique/identity]])
+    (testing "a lookup ref to an existing entity addresses it"
+      ;; creation goes through a tempid + the unique value (upsert);
+      ;; lookup refs ADDRESS, they never silently create
+      (api/transact conn [[:db/add "p" :person/email "a@x"]
+                          [:db/add "p" :person/name "Alice"]])
+      (api/transact conn [[:db/add [:person/email "a@x"] :person/alias "Al"]])
+      (let [found (ffirst (api/q '[:find ?e :in $ ?v :where [?e :person/email ?v]]
+                                  (api/db conn) "a@x"))]
+        (is (pos? found))
+        (is (= {:person/name "Alice" :person/alias ["Al"]}
+               (select-keys (api/pull (api/db conn) '[:person/name :person/alias] found)
+                            [:person/name :person/alias])))
+        (testing "a second tx through the same ref lands on the same entity"
+          (api/transact conn [[:db/add [:person/email "a@x"] :person/name "Alice Prime"]])
+          (is (= "Alice Prime"
+                 (:v (first (api/datoms (api/db conn) :eavt [found :person/name]))))))))
+    (testing "retraction through a resolved lookup ref works"
+      (api/transact conn [[:db/retract [:person/email "a@x"] :person/alias "Al"]])
+      (is (empty? (api/q '[:find ?a :in $ :where [?e :person/alias ?a]] (api/db conn))))))
+  (let [conn (fresh-conn)]
+    (install-person-schema! conn)
+    (api/transact conn [[:db/add "em" :db/ident :person/email]
+                        [:db/add "em" :db/valueType :db.type/string]
+                        [:db/add "em" :db/cardinality :db.cardinality/one]
+                        [:db/add "em" :db/unique :db.unique/identity]])
+    (testing "unresolvable / malformed / non-unique lookup refs refuse loudly"
+      (assert-error :transact/bad-lookup-ref
+        (api/transact conn [[:db/add [:person/email "ghost@x"] :person/name "G"]]))
+      (assert-error :transact/bad-lookup-ref
+        (api/transact conn [[:db/add [:person/name "not-unique"] :person/name "G"]]))
+      (assert-error :transact/bad-lookup-ref
+        (api/transact conn [[:db/add [:nope/never "x"] :person/name "G"]]))
+      (assert-error :transact/bad-lookup-ref
+        (api/transact conn [[:db/add [:person/email] :person/name "G"]])))
+    (testing "nothing from a refused lookup ref lands"
+      (is (empty? (api/q '[:find ?n :where [?e :person/name ?n]] (api/db conn)))))))

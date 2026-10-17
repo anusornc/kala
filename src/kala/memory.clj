@@ -127,22 +127,38 @@
 
 (declare check-entity-map!)
 
+(defn- check-source-value!
+  "The citation coordinate is the transaction entity id (:tx from record),
+  or the string \"datomic.tx\" for the current turn — never the turn's t.
+  Dangling refs would be accepted silently by the transactor, so the spine
+  validates its own namespace here (issue #51)."
+  [db v]
+  (cond
+    (= v current-tx-tempid) nil
+    (and (int? v) (eid/tx-eid? v) (seq (api/datoms db :eavt [v]))) nil
+    :else
+    (core/err :memory/bad-source
+              ":memory/source cites a turn's tx entity id (the :tx value from record), or \"datomic.tx\" for the current turn"
+              {:value v})))
+
 (defn- check-value!
   "Walk a map form's values: component children are entity maps too."
-  [v]
+  [db v]
   (cond
-    (map? v) (check-entity-map! v)
-    (sequential? v) (run! check-value! v)
+    (map? v) (check-entity-map! db v)
+    (sequential? v) (run! #(check-value! db %) v)
     :else nil))
 
 (defn- check-entity-map!
-  [m]
+  [db m]
   (doseq [[k v] m]
-    (when (reserved-write-attrs k)
+    (cond
+      (reserved-write-attrs k)
       (core/err :memory/reserved-attr
                 "Session attribution is written by kala.memory, not by transaction data"
-                {:attr k}))
-    (check-value! v)))
+                {:attr k})
+      (= k :memory/source) (check-source-value! db v)
+      :else (check-value! db v))))
 
 (defn- check-op!
   "One op vector. Data-only is an allowlist, not a case list: an op whose
@@ -150,7 +166,7 @@
   transactor grows op kinds, and a refusal must not depend on remembering
   to enumerate the dangerous ones. For the allowed heads, the attribute
   slot is the only place an op names an attribute."
-  [op]
+  [db op]
   (let [[head & args] op]
     (cond
       (not (keyword? head)) nil                       ; not an op shape — the transactor rejects it
@@ -159,24 +175,28 @@
                 "record takes data-only writes: :db/add, :db/retract, :db.fn/cas"
                 {:op head})
       :else
-      (let [attr (nth args 1 nil)]
-        (when (reserved-write-attrs attr)
+      (let [attr (nth args 1 nil)
+            val (nth args 2 nil)]
+        (cond
+          (reserved-write-attrs attr)
           (core/err :memory/reserved-attr
                     "Session attribution is written by kala.memory, not by transaction data"
-                    {:attr attr}))))))
+                    {:attr attr})
+          (= attr :memory/source)
+          (check-source-value! db val))))))
 
 (defn- check-user-ops!
   "Refuse reserved attributes anywhere in user transaction data — op
   vectors, entity maps, and the nested component maps an entity map
-  carries. The layer's attribution must survive the agent's own ops in
-  the same transaction, and same-tx cardinality-one writes are
-  last-write-wins, so the check walks the data rather than trusting
-  ordering."
-  [tx-data]
+  carries — and validate citation coordinates. The layer's attribution
+  must survive the agent's own ops in the same transaction, and same-tx
+  cardinality-one writes are last-write-wins, so the check walks the
+  data rather than trusting ordering."
+  [db tx-data]
   (run! (fn [op]
           (cond
-            (map? op) (check-entity-map! op)
-            (vector? op) (check-op! op)
+            (map? op) (check-entity-map! db op)
+            (vector? op) (check-op! db op)
             :else nil))
         tx-data))
 
@@ -215,7 +235,7 @@
   [conn session tx-data]
   (let [db (api/db conn)]
     (ensure-spine! db)
-    (check-user-ops! tx-data)
+    (check-user-ops! db tx-data)
     (let [s-eid (require-session! db session)
           report (api/transact conn (into [{:db/id current-tx-tempid :memory/session s-eid}]
                                           tx-data))]

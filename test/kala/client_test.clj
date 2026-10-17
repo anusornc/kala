@@ -139,6 +139,8 @@
    [:transact/unique-conflict
     #(do (api/transact % [[:db/add "x" :person/email "a@x"]])
          (api/transact % [[:db/add "y" :person/email "a@x"]]))]
+   [:transact/bad-lookup-ref
+    #(api/transact % [[:db/add [:person/email "no-such@x"] :person/name "N"]])]
    [:transact/conflicting-upserts
     #(api/transact % [[:db/add "t1" :person/login "va"] [:db/add "t1" :person/login "vb"]])]
    [:transact/cas-failed

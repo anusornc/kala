@@ -200,14 +200,14 @@ journey_mcp() {
  :session "journey-7"}
 EOF
 
-  # turn 1: the vocabulary only — the schema registry derives after a
-  # transaction's op pass, so a fresh attribute is usable from the next
-  # turn on. The server's stdin is held open so the SIGKILL lands mid-life.
+  # turn 1: vocabulary + fact in ONE turn (ADR-0007 — schema registrations
+  # apply before the other ops of their transaction). The server's stdin is
+  # held open so the SIGKILL lands mid-life.
   mkfifo "$DIR/in"
   clojure -M:mcp "$DIR/mcp.edn" >"$DIR/out" 2>>"$DIR/server.log" <"$DIR/in" &
   SRV=$!
   exec 9>"$DIR/in"
-  printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"record","arguments":{"tx-data":"[[:db/add \"note-attr\" :db/ident :proj/note] [:db/add \"note-attr\" :db/valueType :db.type/string] [:db/add \"note-attr\" :db/cardinality :db.cardinality/one]]"}}}' >&9
+  printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"record","arguments":{"tx-data":"[[:db/add \"note-attr\" :db/ident :proj/note] [:db/add \"note-attr\" :db/valueType :db.type/string] [:db/add \"note-attr\" :db/cardinality :db.cardinality/one] [:db/add \"p\" :proj/note \"journey\"]]"}}}' >&9
   waited=0
   while ! grep -q '"id":2' "$DIR/out" 2>/dev/null; do
     waited=$((waited + 1))

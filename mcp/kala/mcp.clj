@@ -150,14 +150,14 @@
                                   "cap" {:type "integer" :description "max facts in :current (default 50)"}
                                   "corrections" {:type "boolean" :description "include the corrections trail (default true)"}}})}
    {:name "record"
-    :description "Record one turn of memory: tx-data becomes exactly one transaction attributed to this session. Returns the turn's t and ordinal plus resolved tempids."
+    :description "Record one turn of memory: tx-data becomes exactly one transaction attributed to this session. Returns the turn's t and ordinal plus resolved tempids. To cite an earlier turn use its :tx value (a tx entity id) — never its t. New vocabulary registers and applies in the same transaction; to address an existing entity by a unique attribute, register-and-upsert via a tempid carrying the unique value, or resolve its eid with the read tool first."
     :inputSchema (schema {:required [:tx-data]
                           :props {"tx-data" {:type "string" :description "EDN vector of transaction ops, e.g. \"[:db/add [:proj/kala] :proj/note \\\"hello\\\"]\" — the string \"datomic.tx\" in a ref position cites this turn"}}})}
    {:name "recall"
     :description "Run a Datalog query over memory — joins included. List results are capped and any cap is reported."
     :inputSchema (schema {:required [:query]
                           :props {"query" {:type "string" :description "EDN query, e.g. \"[:find ?v :in $ ?e :where [?e :proj/deploy-command ?v]]\""}
-                                  "args" {:type "string" :description "EDN vector binding the :in symbols after $, e.g. \"[:proj/kala]\""}
+                                  "args" {:type "string" :description "EDN vector binding the :in symbols after $ — entity references bind as eids, e.g. \"[12345]\""}
                                   "as-of" {:type "integer" :description "t to read against"}
                                   "limit" {:type "integer" :description "max solutions (default 100, ceiling 1000)"}}})}
    {:name "read"

@@ -15,6 +15,14 @@
             [kala.weak-cache :as weak-cache])
   (:import [kala.core Datom]))
 
+(def ^:private schema-attr-idents
+  "The bootstrap attributes whose WRITES are schema registration. ADR-0007:
+  adds carrying these apply before every other op of the same transaction,
+  with the registry re-derived between the phases, so fresh vocabulary is
+  usable in the transaction that defines it."
+  #{:db/ident :db/valueType :db/cardinality :db/unique
+    :db/isComponent :db/doc :db/fn})
+
 (def ^:private retract-entity-ops #{:db.fn/retractEntity :db/retractEntity})
 
 ;; The op heads that name pipeline features rather than stored transaction
@@ -256,11 +264,45 @@
                :value-type (:value-type attr)
                :op op})))
 
-(defn- resolve-e [db kind e unique-holder unique {:keys [temps ensure-temp upsert-claimants]} op]
-  (if (or (string? e) (and (not (int? e)) (not (keyword? e))))
-    ;; user tempid (string) or internal opaque tempid from map form
-    (if (= :db/retract kind)
-      (core/err :transact/bad-entity "Cannot retract using a tempid" {:op op})
+(defn- resolve-lookup-ref
+  "A vector entity reference [unique-attr value] — Datomic lookup-ref
+  semantics: the attribute must be unique-identity (:db/ident qualifies),
+  and the ref must resolve to an existing entity; anything else is an
+  error, never a silent allocation. A resolved lookup ref works anywhere
+  an entity id does, retraction included."
+  [db [a v :as ref] op]
+  (cond
+    (or (not= 2 (count ref)) (not (keyword? a)) (nil? v))
+    (core/err :transact/bad-lookup-ref "A lookup ref is [unique-attr value]" {:ref ref})
+    :else
+    (let [a-id (get (::core/idents db) a)]
+      (cond
+        (nil? a-id)
+        (core/err :transact/bad-lookup-ref "Unknown attribute in lookup ref" {:ref ref})
+        (not= :db.unique/identity (:unique (get (::core/schema-by-id db) a-id)))
+        (core/err :transact/bad-lookup-ref
+                  "A lookup ref's attribute must be unique-identity"
+                  {:ref ref})
+        :else
+        (if-some [e (avet-holder db a-id v)]
+          [db e]
+          (core/err :transact/bad-lookup-ref
+                    "No entity matches the lookup ref" {:ref ref}))))))
+
+(defn- resolve-e [db kind e unique-holder unique {:keys [temps ensure-temp upsert-claimants registering?]} op]
+  (cond
+    (vector? e) (resolve-lookup-ref db e op)
+    (or (string? e) (and (not (int? e)) (not (keyword? e))))
+    ;; user tempid (string) or internal opaque tempid from map form. A
+    ;; schema REGISTRATION tempid mints its own entity and never upserts:
+    ;; the unique value it claims may still be held by an entity whose
+    ;; retraction lands later in the same transaction (ADR-0007's "retract
+    ;; here, define elsewhere"), and upserting here would hand the old
+    ;; entity's identity to the new registration.
+    (if (or (= :db/retract kind) registering?)
+      (do (when (= :db/retract kind)
+            (core/err :transact/bad-entity "Cannot retract using a tempid" {:op op}))
+        (ensure-temp db e))
       (let [allocated (get @temps e)]
         (cond
           (and unique-holder allocated (not= allocated unique-holder))
@@ -281,11 +323,14 @@
                             (vswap! temps assoc e unique-holder)
                             [db unique-holder])
           :else (ensure-temp db e))))
+    :else
     (let [e' (resolve-static-e db e)]
       (when (and (= :db/add kind) unique-holder (not= e' unique-holder))
         (core/err :transact/unique-conflict
                   "Unique value already held by another entity" {:op op}))
-      [db e'])))
+      [db e']
+
+)))
 
 ;; Compare-and-swap on a cardinality-one attribute: the write lands only if
 ;; the current value matches :old (nil :old expects the attribute to be
@@ -562,36 +607,67 @@
              :temps temps
              :ensure-temp ensure-temp
              :upsert-claimants upsert-claimants}
-        ops (mapcat (fn [x]
-                      (if (map? x)
-                        (second (parse-entity-map db-before x))
-                        [x]))
-                    tx-data)
-        ;; The op pass. A transaction-function call splices its returned
-        ;; tx-data at the call position (DataScript sequential semantics):
-        ;; the fn sees every earlier op of the tx applied, and its effects
-        ;; are in the db for everything after it. Fuel bounds runaway
-        ;; recursion across the whole call tree; the log records only the
-        ;; expansion, so replay never re-runs a fn.
+        ;; The op pass, in two phases (ADR-0007): schema-registration ops —
+        ;; adds writing the bootstrap schema attributes — apply first, the
+        ;; registry re-derives, and then everything else applies. Fresh
+        ;; vocabulary is therefore usable in the transaction that defines
+        ;; it, the way Datomic behaves. Replay needs no special case: the
+        ;; log keeps the datoms in phase order and re-derives per entry.
+        ;; A transaction-function call splices its returned tx-data at the
+        ;; call position (DataScript sequential semantics): the fn sees
+        ;; every earlier op of its phase applied, and its effects are in
+        ;; the db for everything after it. Fuel bounds runaway recursion
+        ;; across the whole call tree, per phase; the log records only the
+        ;; expansion, so replay never re-runs a fn. A schema op returned
+        ;; by a tx fn lands in the data phase — same-tx use of it stays a
+        ;; next-turn affair, the pass does not re-partition mid-flight.
+        run-ops (fn run-ops [db0 ops0 txn0 fuel0]
+                  (loop [db db0
+                         acc []
+                         pending ops0
+                         fuel fuel0
+                         txn txn0]
+                    (if-some [op (first pending)]
+                      (let [op (validate-op op)
+                            pending (rest pending)]
+                        (if (tx-fn-call? op)
+                          (do
+                            (when (zero? fuel)
+                              (core/err :transact/tx-fn-overflow
+                                        "Transaction functions exceeded the invocation fuel"
+                                        {:iterations tx-fn-fuel}))
+                            (let [[db' more] (invoke-tx-fn db op)]
+                              (recur db' acc (into (vec more) pending) (dec fuel) txn)))
+                          (let [[db' ds] (apply-op db txn op)]
+                            (recur db' (into acc ds) pending fuel txn))))
+                      [db acc])))
+        schema-element? (fn [x]
+                          (boolean
+                           (or (and (vector? x)
+                                    (= :db/add (nth x 0 nil))
+                                    (string? (nth x 1 nil))
+                                    (contains? schema-attr-idents (nth x 2 nil)))
+                               (and (map? x)
+                                    (boolean (some schema-attr-idents (keys x)))))))
+        expand (fn [db0 elements]
+                 (mapcat (fn [x]
+                           (if (map? x)
+                             (second (parse-entity-map db0 x))
+                             [x]))
+                         elements))
         [db-after datoms]
-        (loop [db db-before
-               acc []
-               pending ops
-               fuel tx-fn-fuel]
-          (if-some [op (first pending)]
-            (let [op (validate-op op)
-                  pending (rest pending)]
-              (if (tx-fn-call? op)
-                (do
-                  (when (zero? fuel)
-                    (core/err :transact/tx-fn-overflow
-                              "Transaction functions exceeded the invocation fuel"
-                              {:iterations tx-fn-fuel}))
-                  (let [[db' more] (invoke-tx-fn db op)]
-                    (recur db' acc (into (vec more) pending) (dec fuel))))
-                (let [[db' ds] (apply-op db txn op)]
-                  (recur db' (into acc ds) pending fuel))))
-            [db acc]))
+        (let [schema-elements (filter schema-element? tx-data)
+              data-elements (remove schema-element? tx-data)
+              [db-mid schema-datoms]
+              (if (seq schema-elements)
+                (let [[db1 d1] (run-ops db-before (expand db-before schema-elements)
+                                        (assoc txn :registering? true) tx-fn-fuel)]
+                  [(derive-schema db1 d1) d1])
+                [db-before []])
+              [db-final data-datoms] (run-ops db-mid (expand db-mid data-elements)
+                                              txn tx-fn-fuel)]
+          [db-final (into schema-datoms data-datoms)])
+        
         ;; Every transaction entity carries :db/txInstant unless the tx itself
         ;; supplied one via metadata. The stamp is part of the transaction: it
         ;; goes to the log, the indexes, and the report's :tx-data.
