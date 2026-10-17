@@ -157,7 +157,8 @@ Then connect remotely with `kala.client/connect` — see [docs/wire-protocol.md]
 Kala is published to [Clojars](https://clojars.org/io.github.anusornc/kala):
 
 ```clojure
-io.github.anusornc/kala {:mvn/version "0.1.0"}
+io.github.anusornc/kala     {:mvn/version "0.3.1"}   ; the database + memory layer
+io.github.anusornc/kala-mcp {:mvn/version "0.3.1"}   ; the MCP server (separate artifact)
 ```
 
 Releases are tag-triggered: pushing a `v*` tag runs the behavioral matrix
