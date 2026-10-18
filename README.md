@@ -89,6 +89,13 @@ data: a cardinality-one re-assertion supersedes the old belief into history,
 and `context`'s `:corrections` section shows the full trail of the entities
 it shows you.
 
+### Backup and migration
+
+The storage log exports as EDN and restores into any backend — entity
+ids and t replay identically, values ride tagged literals, and the
+append-only guard means an import can extend a store, never overwrite
+one. See [docs/backup-and-migration.md](docs/backup-and-migration.md).
+
 ### MCP server
 
 ```bash

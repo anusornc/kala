@@ -19,6 +19,7 @@
 
             [kala.client-test]
             [kala.mcp-test]
+            [kala.backup-test]
             [kala.eid-test]
             [kala.file-recovery-test]
             [kala.transactor-test]
@@ -43,6 +44,7 @@
 (def ^:private once-ns-symbols
   ['kala.client-test
    'kala.mcp-test
+   'kala.backup-test
    'kala.eid-test
    'kala.file-recovery-test
    'kala.transactor-test
