@@ -183,7 +183,7 @@ project/web E2E journeys on every push and PR.
 | Module | Role |
 | --- | --- |
 | core | Datoms, schema, EAVT/AEVT/AVET/VAET indexes, transaction pipeline, Datalog, pull, time travel |
-| storage-api | Documented storage protocol: segment put/get/list + ordered log append/scan |
+| storage-api | Documented storage protocol: segment put/get/list + ordered log append/scan/prune |
 | storage-memory / storage-file | v1 backends: volatile in-memory, durable local directory |
 | transactor | Standalone single-writer process; serializes and logs transactions |
 | peer | Embedded library: local indexes and queries, writes in-process through the storage log |
@@ -199,8 +199,10 @@ in its own process ([ADR-0005](docs/adr/0005-production-bar-is-the-embedded-libr
 What that deliberately does not include:
 
 - **RAM-bound stores** — a file store replays its whole log into in-memory
-  indexes at boot; there is no compaction in v1, so a store's size is the
-  machine's memory.
+  indexes at boot, so a store's size is the machine's memory. Explicit
+  snapshot-and-prune compaction (`api/compact`) bounds boot replay to the
+  live state plus the tail, at the cost of history below the compaction
+  base ([ADR-0008](docs/adr/0008-compaction-is-explicit-snapshot-and-prune.md)).
 - **Single writer, single node** — one transactor serializes all writes;
   no replication or HA.
 - **Transport security is opt-in and minimal** — starting the transactor

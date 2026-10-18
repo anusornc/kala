@@ -37,23 +37,43 @@
     (assoc-in db [::core/next-idx 1] (max n (get-in db [::core/next-idx 1] 0)))
     db))
 
-;; Rebuild a db value from the storage log up to up-to-t. history? keeps
-;; retraction entries as visible datoms (added=false) instead of applying
-;; them as removals.
+;; Apply one log entry's datoms to a db value. history? keeps retraction
+;; entries as visible datoms (added=false) instead of applying them as
+;; removals. The snapshot entry (kala.compaction) rides the same path.
+(defn- apply-entry [db {:keys [t datoms]} history?]
+  (let [datoms (mapv raw->datom datoms)]
+    (-> (reduce (fn [db ^Datom d]
+                  (if (or history? (.added d))
+                    (tx/update-indexes db conj d)
+                    (tx/retract-from-indexes db d)))
+                db datoms)
+        (tx/derive-schema datoms)
+        (restore-next-idx datoms)
+        (assoc ::core/t t))))
+
+;; Rebuild a db value from storage up to up-to-t. A store that has been
+;; compacted replays its snapshot of live state first, then only the log
+;; entries above the snapshot's base — entries at or below it are covered
+;; by the snapshot, and an interrupted prune's leftovers are skipped by
+;; the same range. The snapshot's explicit allocation counter wins over
+;; the datom max: a live-state-only max cannot recover the ids of
+;; entities whose every datom was retracted before the base.
 (defn- replay [storage up-to-t history?]
-  (reduce (fn [db {:keys [t datoms]}]
-            (let [datoms (mapv raw->datom datoms)
-                  db (reduce (fn [db ^Datom d]
-                               (if (or history? (.added d))
-                                 (tx/update-indexes db conj d)
-                                 (tx/retract-from-indexes db d)))
-                             db datoms)]
-              (-> db
-                  (tx/derive-schema datoms)
-                  (restore-next-idx datoms)
-                  (assoc ::core/t t))))
-          (core/empty-db storage)
-          (storage/log-scan storage (inc core/bootstrap-t) up-to-t)))
+  (let [snap (storage/get-segment storage storage/snapshot-segment-id)
+        base (or (:t snap) core/bootstrap-t)
+        db0 (if snap
+              (let [db1 (apply-entry (core/empty-db storage)
+                                     {:t (:t snap) :datoms (:datoms snap)}
+                                     history?)]
+                (-> db1
+                    (assoc-in [::core/next-idx 1]
+                              (max (or (:next-idx snap) 0)
+                                   (get-in db1 [::core/next-idx 1] 0)))
+                    (assoc ::core/base-t (:t snap))))
+              (core/empty-db storage))]
+    (reduce (fn [db entry] (apply-entry db entry history?))
+            db0
+            (storage/log-scan storage (inc base) up-to-t))))
 
 ;; ---- replay cache ----------------------------------------------------------------
 ;; The log is append-only, so a replay up to a fixed t is a pure function of
@@ -67,20 +87,32 @@
 
 (def ^:private replay-caches (weak-cache/make))
 
-(defn- cached-replay [storage up-to-t history?]
-  (assoc (weak-cache/fetch replay-caches storage [up-to-t history?]
+;; The cache key carries the compaction base: compaction rewrites what a
+;; replay reads (snapshot + tail), so a pre-compaction entry must never
+;; serve a post-compaction question. base 0 means never compacted — a key
+;; no compaction can invalidate.
+(defn- cached-replay [storage up-to-t history? base]
+  (assoc (weak-cache/fetch replay-caches storage [up-to-t history? base]
                            #(dissoc (replay storage up-to-t history?) ::core/storage))
          ::core/storage storage))
 
 (defn as-of
-  "The db value as of transaction t (a t counter or a tx entity id)."
+  "The db value as of transaction t (a t counter or a tx entity id).
+  Raises :db/pruned-t when the store has been compacted and t is below
+  the snapshot's base — those entries no longer exist, and a silently
+  wrong answer would misstate what the db believed."
   [db t]
   (let [t (normalize-t t)]
     (when (< t core/bootstrap-t)
       (core/err :db/bad-t "t is before the bootstrap transaction" {:t t}))
+    (when-some [base (::core/base-t db)]
+      (when (< t base)
+        (core/err :db/pruned-t
+                  "History before the compaction base is pruned"
+                  {:t t :base base})))
     (if (>= t (::core/t db))
       db
-      (cached-replay (::core/storage db) t false))))
+      (cached-replay (::core/storage db) t false (::core/base-t db)))))
 
 (defn since
   "A view of the db exposing only datoms asserted after t (a t counter or a
@@ -103,9 +135,11 @@
 
 (defn history
   "The db value containing every assertion and retraction ever transacted,
-  each with its added flag."
+  each with its added flag. After compaction this is the snapshot's
+  surviving datoms plus the full post-compaction story — the trail below
+  the base is pruned with the log (ADR-0008)."
   [db]
-  (cached-replay (::core/storage db) (::core/t db) true))
+  (cached-replay (::core/storage db) (::core/t db) true (::core/base-t db)))
 
 (defn db-with
   "Speculative transaction: applies tx-data against a db value and returns

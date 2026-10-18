@@ -9,6 +9,7 @@
   Entity navigation (entity/touch) is a peer-only feature; client-mode
   calls raise :client/peer-only."
   (:require [kala.client :as client]
+            [kala.compaction :as compaction]
             [kala.core :as core]
             [kala.entity :as entity]
             [kala.pull :as pull]
@@ -170,3 +171,21 @@
   "The storage handle backing a db value — the plain-map read accessor."
   [db]
   (core/db-storage db))
+
+(defn compact
+  "Snapshot-and-prune compaction (peer mode only): write a snapshot of
+  the live state into a storage segment, then prune the log entries it
+  covers, so boot replays live state + tail instead of the whole log.
+  Returns {:t the-base :datoms snapshotted :pruned pruned}.
+
+  The cost is history below the base: as-of reads there raise
+  :db/pruned-t and history shows only surviving datoms (ADR-0008).
+  Explicit and opt-in by design — never a background process. Safe to
+  run while transacts land (they go above the base) and idempotent;
+  re-running after an interruption finishes the job."
+  [conn]
+  (when (client-conn? conn)
+    (core/err :client/peer-only
+              "Compaction is peer-only; in client mode the transactor owns the storage"
+              {:op :compact}))
+  (compaction/compact! conn))

@@ -20,6 +20,7 @@
             [kala.client-test]
             [kala.mcp-test]
             [kala.backup-test]
+            [kala.compaction-test]
             [kala.eid-test]
             [kala.file-recovery-test]
             [kala.transactor-test]
@@ -45,6 +46,7 @@
   ['kala.client-test
    'kala.mcp-test
    'kala.backup-test
+   'kala.compaction-test
    'kala.eid-test
    'kala.file-recovery-test
    'kala.transactor-test
