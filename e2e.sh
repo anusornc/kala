@@ -157,7 +157,17 @@ journey_release() {
   done
   rm -f "$JAR"
 
-  # the MCP artifact: server + its codec, never the core
+  # the MCP artifact: server + its codec, never the core. Its basis
+  # declares io.github.anusornc/kala at this same version, which only
+  # resolves once the core jar is in the local repository — install it
+  # first (install rebuilds the jar it installs), as the release flow does.
+  if RELEASE_VERSION=$VERSION clojure -T:build install >/dev/null 2>&1; then
+    ok "core jar installs locally for the mcp artifact's dependency"
+  else
+    bad "core jar install failed"
+    return 1
+  fi
+  rm -f "$JAR"
   if RELEASE_VERSION=$VERSION clojure -T:build mcp-jar >/dev/null 2>&1; then
     ok "mcp artifact builds"
   else
