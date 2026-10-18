@@ -137,7 +137,10 @@ single-entity updates as wall clock, plus three read shapes (simple
 pattern, filtered + input, join) and a point read. The final section times
 the same peer engine on durable **file storage** against memory — the
 durability cost: reads are comparable (indexes are rebuilt in memory),
-writes pay the fsync-before-ack.
+writes pay the fsync-before-ack. A kala-only last section prices
+**contention**: 1–8 concurrent client connections transacting through one
+transactor (memory storage, per-op percentiles per concurrency level),
+which is what serialization through the single writer costs.
 
 Methodology: engine setup (connection, schema transact — noticeable for
 original Datomic's peer startup) happens before any timing and is excluded

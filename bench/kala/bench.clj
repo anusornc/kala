@@ -22,7 +22,9 @@
   :bench-datomic aliases only — the release jar is unchanged."
   (:require [clojure.string :as str]
             [datascript.core :as d]
-            [kala.api :as api]))
+            [kala.api :as api]
+            [kala.client :as client]
+            [kala.transactor :as tx]))
 
 (def ^:private batch-size 200)
 (def ^:private friend-batch-size 500)
@@ -184,6 +186,62 @@
        (dotimes [i 100]
          ((:transact-batch engine) conn [[:db/add target :person/age (inc i)]]))))))
 
+;; ---- contention cost: concurrent client writers (kala-only) -----------------------
+;;
+;; The engine suites above run single-threaded; the transactor's
+;; lock-serialized concurrent-writer path has no numbers. This section is
+;; kala-only like the storage-cost one — a byte-identical gate across
+;; engines would need each engine's own networked harness, and the
+;; question here is kala's: what does serializing through one transactor
+;; cost as writers multiply. Memory storage isolates that serialization;
+;; durable file would confound every row with fsync latency, which the
+;; storage-cost section already prices.
+
+(def ^:private contention-levels [1 2 4 8])
+(def ^:private contention-ops-per-client 100)
+(def ^:private contention-warmup 10)
+
+(defn- client-write-samples
+  "One client connection's per-transact times (seconds): warmup transacts
+  untimed, then every transact timed with nanoTime. Each transact creates
+  one entity through the full wire path — tempids resolve per
+  transaction, so the same literal tempid is honest in every op."
+  [host port ops]
+  (let [conn (client/connect {:host host :port port})]
+    (try
+      (dotimes [i contention-warmup]
+        (api/transact conn [[:db/add "w" :person/name "w"]
+                            [:db/add "w" :person/age i]]))
+      (mapv (fn [i]
+              (let [t0 (System/nanoTime)]
+                (api/transact conn [[:db/add "w" :person/name "w"]
+                                    [:db/add "w" :person/age i]])
+                (/ (- (System/nanoTime) t0) 1e9)))
+            (range ops))
+      (finally (client/close conn)))))
+
+(defn- contention-section
+  []
+  (println (str "\n=== contention cost: concurrent client writers through one transactor (memory storage) ===\n"))
+  (let [t (tx/start! {:storage :memory :port 0})]
+    (try
+      (api/transact (:conn t) schema-tx)
+      (println "| benchmark | engine | mean / total | p50 | p95 | p99 |")
+      (println "|---|---|---|---|---|---|")
+      (doseq [clients contention-levels]
+        (let [writers (mapv (fn [_] (future (client-write-samples
+                                             "127.0.0.1" (:port t)
+                                             contention-ops-per-client)))
+                            (range clients))
+              samples (sort (mapcat deref writers))]
+          (latency-row (str clients " concurrent client(s), "
+                            contention-ops-per-client " transacts each")
+                       "kala (client)"
+                       {:mean (/ (reduce + samples) (count samples))
+                        :samples samples})))
+      (finally
+        ((:stop! t))))))
+
 ;; ---- runner ---------------------------------------------------------------------
 
 (defn run-bench
@@ -267,12 +325,15 @@
       (wall-row "100 updates (single-entity txs)" (:name file)
                    (update-workload file conn eids))
       (let [target (get eids "e0")]
-        (doseq [[label query args] [["simple pattern" q-all []]
+          (doseq [[label query args] [["simple pattern" q-all []]
                                     ["filtered + input" q-filtered [30]]
                                     ["join (friend -> name)" q-join []]
                                     ["point read (entity -> age)" q-point [target]]]]
           (latency-row label (:name file) (bench-query file conn query args))))
-      (println ""))))
+      (println "")))
+  ;; kala-only: what serializing through one transactor costs as client
+  ;; writers multiply (see the section's own preamble)
+  (contention-section))
 
 (defn- parse-sizes [args]
   (if (seq args)
