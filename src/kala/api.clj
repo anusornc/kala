@@ -173,10 +173,10 @@
   (core/db-storage db))
 
 (defn compact
-  "Snapshot-and-prune compaction (peer mode only): write a snapshot of
+  "Checkpoint-and-prune compaction (peer mode only): write a checkpoint of
   the live state into a storage segment, then prune the log entries it
   covers, so boot replays live state + tail instead of the whole log.
-  Returns {:t the-base :datoms snapshotted :pruned pruned}.
+  Returns {:t the-base :datoms checkpointted :pruned pruned}.
 
   The cost is history below the base: as-of reads there raise
   :db/pruned-t and history shows only surviving datoms (ADR-0008).

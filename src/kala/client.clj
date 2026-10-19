@@ -25,7 +25,7 @@
     (= mode :as-of) {:t t}
     (= mode :since) {:since-t t}
     (= mode :history) {:history true}
-    ;; :current markers are snapshots: pin the t they were taken at
+    ;; a :current marker stands for one db value: pin the t it was taken at
     t {:t t}
     :else {}))
 

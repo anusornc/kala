@@ -1,5 +1,5 @@
 (ns kala.compaction-test
-  "The compaction seam: snapshot-and-prune preserves the live db, the
+  "The compaction seam: checkpoint-and-prune preserves the live db, the
   allocation counter, and time travel above the base on both backends;
   history below the base is loudly pruned (:db/pruned-t); and the
   monotonicity guard survives a log that pruning emptied — including
@@ -79,12 +79,12 @@
           (is (= (:t built) (api/db-t (api/db conn))))
           (is (= before (project (api/db conn))))
           (is (= #{"alice" "bob" "carol"} (names))))
-        (testing "the log below the base is gone; the snapshot segment exists"
+        (testing "the log below the base is gone; the checkpoint segment exists"
           (is (empty? (storage/log-scan storage-h 0 (:t report))))
-          (is (some? (storage/get-segment storage-h storage/snapshot-segment-id)))
-          (is (= (:t report) (compaction/snapshot-base storage-h))))))))
+          (is (some? (storage/get-segment storage-h storage/checkpoint-segment-id)))
+          (is (= (:t report) (compaction/checkpoint-base storage-h))))))))
 
-(deftest reopen-after-compaction-replays-snapshot-plus-tail
+(deftest reopen-after-compaction-replays-checkpoint-plus-tail
   (let [dir (tmp-dir)
         {:keys [conn]} (build-store! {:storage :file :path dir})
         before (project (api/db conn))
@@ -131,7 +131,7 @@
           (is (some? e))
           (is (= :db/pruned-t (:kala/error (ex-data e))))
           (is (= base (:base (ex-data e)))))))
-    (testing "as-of at the base is the snapshot state"
+    (testing "as-of at the base is the checkpoint state"
       (is (= #{"alice" "bob" "carol"}
              (set (map first (api/q names-q (api/as-of db base)))))))
     (testing "as-of above the base sees pre-base facts by their original tx"
@@ -167,7 +167,7 @@
         second (:t (api/compact conn))]
     (testing "a second compaction moves the base forward"
       (is (< first-base second))
-      (is (= second (compaction/snapshot-base (api/db-storage (api/db conn))))))
+      (is (= second (compaction/checkpoint-base (api/db-storage (api/db conn))))))
     (testing "the window between the bases stays readable as-of"
       (let [db (api/db conn)]
         (is (some? (api/q '[:find ?e :in $ ?n :where [?e :x/name ?n]] (api/as-of db second) "zoe"))))
@@ -187,7 +187,7 @@
         age-story (set (map (juxt :v :added)
                             (filter #(= :x/age (:a %)) (api/datoms h :eavt [alice]))))]
     (testing "the correction's OUTCOME survives; the trail below the base does not"
-      ;; pre-base: 30 asserted then corrected away; the snapshot holds
+      ;; pre-base: 30 asserted then corrected away; the checkpoint holds
       ;; only the live 31, so history shows no 30 at all
       (is (contains? age-story [31 true]))
       (is (not (contains? age-story [30 true])))

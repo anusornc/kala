@@ -76,12 +76,12 @@
        sort
        vec))
 
-(defn- snapshot-base-t
-  "The t a stored snapshot claims as its base, or 0 — the append floor a
-  fully pruned log loses. A payload that is not a kala snapshot map
+(defn- checkpoint-base-t
+  "The t a stored checkpoint claims as its base, or 0 — the append floor a
+  fully pruned log loses. A payload that is not a kala checkpoint map
   (anything else under the reserved id) contributes nothing."
   [^File root]
-  (let [f (segment-file root storage/snapshot-segment-id)]
+  (let [f (segment-file root storage/checkpoint-segment-id)]
     (if-not (.exists f)
       0
       (let [v (read-obj f)]
@@ -98,12 +98,12 @@
         _ (doseq [d [root (io/file root "segments") (io/file root "log")]]
             (.mkdirs d))
         ;; cold start: one directory scan derives last-t (raised to the
-        ;; snapshot's base when a compaction has pruned the log — a fully
+        ;; checkpoint's base when a compaction has pruned the log — a fully
         ;; pruned log's files hold no floor of their own); appends compare
         ;; against the held value — the monotonicity check is O(1) per
         ;; commit, matching the memory adapter's sorted-map cost model
         last-t (atom (max (or (last (log-ts root)) 0)
-                          (snapshot-base-t root)))]
+                          (checkpoint-base-t root)))]
     (reify storage/Storage
       (put-segment [_ id data]
         (write-obj (segment-file root id) data)
@@ -133,7 +133,7 @@
       (prune-log! [_ up-to-t]
         (doseq [t (filter #(<= % up-to-t) (log-ts root))]
           ;; a failed delete leaves a replay-ignored file, not a corrupt
-          ;; store — replay starts after the snapshot's base — but the
+          ;; store — replay starts after the checkpoint's base — but the
           ;; ceiling this prunes toward would silently stop shrinking, so
           ;; surface it
           (let [f (log-file root t)]

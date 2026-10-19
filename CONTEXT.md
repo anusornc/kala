@@ -113,12 +113,24 @@ _Avoid_: server, writer
 ### Storage
 
 **log entry**:
-One append-log record: a t plus the raw datoms transacted at that t. The storage log is an ordered sequence of log entries; rebuilding a database replays it.
+One append-log record: a t plus the raw datoms transacted at that t. The storage log is an ordered sequence of log entries; rebuilding a database replays it — from the compaction base when the store has been compacted.
 _Avoid_: segment, batch
 
 **segment**:
-Content-addressed data stored under a unique id via the storage protocol's put/get/list. A segment is not a log entry and never holds transaction facts.
+Content-addressed data stored under a unique id via the storage protocol's put/get/list. A segment is not a log entry: it never records a transaction. The checkpoint is the one segment kala itself writes.
 _Avoid_: blob, chunk
+
+**checkpoint**:
+The live state as of one t, written as a segment under the reserved checkpoint id so that a rebuild replays checkpoint + tail instead of the whole log. Its datoms keep their original tx; the user allocation counter rides along explicitly.
+_Avoid_: snapshot, image, dump
+
+**compaction base**:
+The t of the store's checkpoint. Replay is exact at and above it; below it the log is pruned, so as-of raises :db/pruned-t there and history holds only the survivors.
+_Avoid_: cutoff, horizon, watermark
+
+**compaction**:
+The explicit maintenance call (api/compact) that writes a checkpoint for the current t and prunes every log entry at or below it. Opt-in by design — never automatic.
+_Avoid_: vacuum, GC, squash
 
 **storage backend**:
 A pluggable implementation of the storage protocol (memory, local file) behind the log.

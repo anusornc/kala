@@ -200,9 +200,9 @@ What that deliberately does not include:
 
 - **RAM-bound stores** — a file store replays its whole log into in-memory
   indexes at boot, so a store's size is the machine's memory. Explicit
-  snapshot-and-prune compaction (`api/compact`) bounds boot replay to the
+  checkpoint-and-prune compaction (`api/compact`) bounds boot replay to the
   live state plus the tail, at the cost of history below the compaction
-  base ([ADR-0008](docs/adr/0008-compaction-is-explicit-snapshot-and-prune.md)).
+  base ([ADR-0008](docs/adr/0008-compaction-is-explicit-checkpoint-and-prune.md)).
 - **Single writer, single node** — one transactor serializes all writes;
   no replication or HA.
 - **Transport security is opt-in and minimal** — starting the transactor

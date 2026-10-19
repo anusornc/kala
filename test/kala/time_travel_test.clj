@@ -1,5 +1,5 @@
 (ns ^:peer kala.time-travel-test
-  "Behavioral seam: time travel — as-of snapshots, since views, history with
+  "Behavioral seam: time travel — as-of db values, since views, history with
   retraction status, and speculative with()."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
@@ -32,7 +32,7 @@
 
 ;; ---- as-of -------------------------------------------------------------------
 
-(deftest as-of-reads-consistent-past-snapshots
+(deftest as-of-reads-consistent-past-db-values
   (let [{:keys [conn alice tx2 tx3]} (load-fixture!)
         db-now (api/db conn)]
     (testing "as-of an earlier tx hides later facts"

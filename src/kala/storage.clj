@@ -19,20 +19,20 @@
     "All log entries with from-t <= t <= to-t, ordered by t ascending.")
   (prune-log! [storage up-to-t]
     "Remove every log entry with t <= up-to-t — compaction's second half.
-     The pair is ordered: put the snapshot segment FIRST (its put is
+     The pair is ordered: put the checkpoint segment FIRST (its put is
      durable), prune after, so a crash anywhere between leaves a store
-     that replays identically (replay starts after the snapshot's base
+     that replays identically (replay starts after the checkpoint's base
      and simply ignores leftover pre-base entries). After pruning, appends
      must exceed up-to-t even when the pruned range held the newest
      entries."))
 
-(def snapshot-segment-id
-  "The segment id under which compaction stores the snapshot of live
+(def checkpoint-segment-id
+  "The segment id under which compaction stores the checkpoint of live
   state (see kala.compaction). One fixed id, overwritten per compaction:
-  snapshots never accumulate, and a crash mid-compaction leaves either
-  the previous or the new snapshot — both replayable with whatever log
+  checkpoints never accumulate, and a crash mid-compaction leaves either
+  the previous or the new checkpoint — both replayable with whatever log
   remains."
-  "kala.snapshot/current")
+  "kala.checkpoint/current")
 
 (defn check-monotonic-t
   "The log's one invariant, enforced at the append seam: t must be strictly

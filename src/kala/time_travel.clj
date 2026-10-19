@@ -1,5 +1,5 @@
 (ns kala.time-travel
-  "Time travel over the storage log: replay, as-of snapshots, since views,
+  "Time travel over the storage log: replay, as-of checkpoints, since views,
   history, and speculative with(). Rebuilding a db re-applies every log
   entry through the transaction pipeline's index and schema primitives, so
   a rebuilt db value equals the live one."
@@ -39,7 +39,7 @@
 
 ;; Apply one log entry's datoms to a db value. history? keeps retraction
 ;; entries as visible datoms (added=false) instead of applying them as
-;; removals. The snapshot entry (kala.compaction) rides the same path.
+;; removals. The checkpoint entry (kala.compaction) rides the same path.
 (defn- apply-entry [db {:keys [t datoms]} history?]
   (let [datoms (mapv raw->datom datoms)]
     (-> (reduce (fn [db ^Datom d]
@@ -52,14 +52,14 @@
         (assoc ::core/t t))))
 
 ;; Rebuild a db value from storage up to up-to-t. A store that has been
-;; compacted replays its snapshot of live state first, then only the log
-;; entries above the snapshot's base — entries at or below it are covered
-;; by the snapshot, and an interrupted prune's leftovers are skipped by
-;; the same range. The snapshot's explicit allocation counter wins over
+;; compacted replays its checkpoint of live state first, then only the log
+;; entries above the checkpoint's base — entries at or below it are covered
+;; by the checkpoint, and an interrupted prune's leftovers are skipped by
+;; the same range. The checkpoint's explicit allocation counter wins over
 ;; the datom max: a live-state-only max cannot recover the ids of
 ;; entities whose every datom was retracted before the base.
 (defn- replay [storage up-to-t history?]
-  (let [snap (storage/get-segment storage storage/snapshot-segment-id)
+  (let [snap (storage/get-segment storage storage/checkpoint-segment-id)
         base (or (:t snap) core/bootstrap-t)
         db0 (if snap
               (let [db1 (apply-entry (core/empty-db storage)
@@ -88,7 +88,7 @@
 (def ^:private replay-caches (weak-cache/make))
 
 ;; The cache key carries the compaction base: compaction rewrites what a
-;; replay reads (snapshot + tail), so a pre-compaction entry must never
+;; replay reads (checkpoint + tail), so a pre-compaction entry must never
 ;; serve a post-compaction question. base 0 means never compacted — a key
 ;; no compaction can invalidate.
 (defn- cached-replay [storage up-to-t history? base]
@@ -99,7 +99,7 @@
 (defn as-of
   "The db value as of transaction t (a t counter or a tx entity id).
   Raises :db/pruned-t when the store has been compacted and t is below
-  the snapshot's base — those entries no longer exist, and a silently
+  the checkpoint's base — those entries no longer exist, and a silently
   wrong answer would misstate what the db believed."
   [db t]
   (let [t (normalize-t t)]
@@ -135,7 +135,7 @@
 
 (defn history
   "The db value containing every assertion and retraction ever transacted,
-  each with its added flag. After compaction this is the snapshot's
+  each with its added flag. After compaction this is the checkpoint's
   surviving datoms plus the full post-compaction story — the trail below
   the base is pruned with the log (ADR-0008)."
   [db]
