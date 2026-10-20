@@ -151,6 +151,10 @@
    [:transact/bad-tx-fn
     #(api/transact % [[:db/add "fn" :db/ident :t/bad-tx-fn]
                       [:db/add "fn" :db/fn "(fn [db] nope-symbol)"]])]
+   ;; ADR-0009: an upsert-registration cannot change the holder's value type
+   [:transact/schema-conflict
+    #(api/transact % [[:db/add "dup" :db/ident :person/name]
+                      [:db/add "dup" :db/valueType :db.type/long]])]
    [:transact/tx-fn-failed
     #(do (install-tx-fn! % :t/boom-tx-fn "(fn [db] (throw (ex-info \"boom\" {})))")
          (api/transact % [[:t/boom-tx-fn]]))]
@@ -210,7 +214,8 @@
    :client/error "fallback kind for a reply frame without :error; the transactor's fail frames always carry one"
    :storage/non-monotonic-t "peer mode triggers it through the public path below (a lying adapter); client mode cannot carry an adapter — the transactor config is EDN keywords"
    :storage/rename-failed "needs filesystem fault injection between temp write and rename; keys enumerated for the reply path"
-   :connect/bad-token "transactor-side startup validation (start! refuses a non-string or empty :token before binding); never rides a reply"})
+   :connect/bad-token "transactor-side startup validation (start! refuses a non-string or empty :token before binding); never rides a reply"
+   :memory/bad-tx-data "raised at the MCP edge (kala.mcp's tx-data-arg!) and in-process by memory/record — it never crosses a transactor reply"})
 
 (def raw-frame-kinds
   "Reply-level protocol kinds: raised by the wire layer itself, so they are

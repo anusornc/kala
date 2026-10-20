@@ -23,7 +23,8 @@
             [kala.api :as api]
             [kala.client :as client]
             [kala.core :as core]
-            [kala.memory :as memory]))
+            [kala.memory :as memory])
+  (:import [java.io StringReader PushbackReader]))
 
 ;; ---- json-rpc -----------------------------------------------------------------
 
@@ -80,10 +81,45 @@
                     cap (assoc :cap (opt-long! cap))
                     (some? corrections) (assoc :corrections? (boolean corrections)))))
 
+(defn- tx-data-arg!
+  "record's tx-data: an EDN string holding ONE vector of ops. Agents write
+  the ops as several top-level forms more often than anything else —
+  `edn/read-string` would silently take the first and drop the rest, so
+  read them all: multiple op vectors wrap into the one vector `record`
+  wants; anything else that fails to be a single vector raises with the
+  expected shape spelled out (the trial's `:transact/bad-op` wrinkle)."
+  [v]
+  (when (nil? v) (bad-arg! "record" :tx-data "is required (an EDN string)"))
+  (when-not (string? v)
+    (core/err :mcp/bad-edn
+              "record: tx-data must be an EDN string"
+              {:tool "record" :argument "tx-data" :got v}))
+  (let [forms (try
+                (loop [r (PushbackReader. (StringReader. v))
+                       out []]
+                  (let [form (edn/read {:eof nil} r)]
+                    (if (nil? form) out (recur r (conj out form)))))
+                (catch Exception e
+                  (core/err :mcp/bad-edn
+                            "record: tx-data is not readable EDN"
+                            {:tool "record" :argument "tx-data"
+                             :message (.getMessage e)})))]
+    (cond
+      (and (= 1 (count forms)) (vector? (first forms)))
+      (first forms)
+
+      (and (pos? (count forms)) (every? vector? forms))
+      (vec forms)
+
+      :else
+      (core/err :mcp/bad-edn
+                "record tx-data must be ONE vector of ops, e.g. \"[[:db/add ...] [:db/retract ...]]\""
+                {:tool "record" :argument "tx-data" :forms (count forms)}))))
+
 (defn- tool-record
   [state {:keys [tx-data]}]
   (memory/record (conn state) (:session-eid @state)
-                 (edn-arg! "record" :tx-data tx-data)))
+                 (tx-data-arg! tx-data)))
 
 (defn- tool-recall
   [state {:keys [query args as-of limit]}]

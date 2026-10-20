@@ -104,6 +104,22 @@
         (is (= 1 (count turns)))
         (is (= 1 (second (first turns))))))))
 
+(deftest record-tx-data-shapes
+  ;; the round-2 trial wrinkle: agents write the ops as several top-level
+  ;; EDN forms more often than one vector, and a first-form-only read
+  ;; would silently drop the rest — the edge reads them all
+  (let [state (state!)]
+    (testing "several top-level op vectors become one turn"
+      (let [reply (call! state "record"
+                         {:tx-data "[:db/add [:db/ident :proj/kala] :proj/deploy-command \"a\"]\n[:db/add [:db/ident :proj/kala] :proj/deploy-command \"b\"]"})]
+        (is (nil? (-> reply :result :isError)))
+        (is (= "b" (-> (read-edn (call! state "context" {:cap 5})) :current first peek)))))
+    (testing "forms that are not all op vectors raise the expected shape"
+      (let [reply (call! state "record"
+                         {:tx-data "[:db/add [:proj/kala] :proj/deploy-command \"x\"] {:db/id 2}"})]
+        (is (true? (-> reply :result :isError)))
+        (is (= :mcp/bad-edn (:kala/error (read-edn reply))))))))
+
 (deftest recall-and-read-and-history-work-over-the-tools
   (let [state (state!)
         proj (api/entid (api/db (:conn @state)) :proj/kala)

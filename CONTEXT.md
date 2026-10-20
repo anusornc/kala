@@ -75,7 +75,7 @@ A typed, named property an entity can carry, itself defined as data: an entity w
 _Avoid_: field, property, column
 
 **ident**:
-The keyword naming a schema entity. Every attribute has one; an entity with only an ident is an enum.
+The keyword naming a schema entity. Every attribute has one; an entity with only an ident is an enum. An ident names exactly one entity: registering an ident that is already held resolves to that holder, never to a second one.
 _Avoid_: keyword id, name
 
 **enum**:

@@ -18,12 +18,18 @@ Three boundaries are deliberate:
   existing entity (retraction + re-assertion, renames) keeps its written
   order — that is exactly ADR-0003's `same-tx-attribute-redefinition`
   territory, and re-ordering it breaks net-state-wins.
-- **Registration never upserts.** The schema phase runs with the upsert
+- **Registration never upserts.** ~~The schema phase runs with the upsert
   machinery off: a registration tempid mints its own entity, because the
   unique value it claims may still be held by an entity whose retraction
   lands later in the same transaction (`retract here, define elsewhere`)
   — upserting there would hand the old entity's identity to the new
-  registration.
+  registration.~~ **Revised 2026-10-20:** a registration tempid now
+  upserts onto the ident's existing holder, minting only when this same
+  transaction retracts the ident from that holder — the narrow case this
+  boundary was written for. See
+  [ADR-0009](0009-registration-upserts-onto-the-idents-holder.md), whose
+  cost accounting (a schema rerun silently orphaning an attribute's data
+  from every query) superseded this boundary.
 - **The pass does not re-partition mid-flight.** A transaction function
   whose returned ops register vocabulary still lands in the data phase —
   same-tx use of that vocabulary stays a next-turn affair. And an entity

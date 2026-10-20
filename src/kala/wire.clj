@@ -106,6 +106,8 @@
    :transact/bad-tx-fn [:op :source]
    :transact/tx-fn-failed [:fn :message]
    :transact/tx-fn-overflow [:iterations]
+   :transact/schema-conflict [:attribute :was :now]
+   :memory/bad-tx-data [:tx-data]
    :datoms/unknown-index [:index]
    :datoms/bad-components [:index :components]
    :pull/bad-pattern [:expr :option :element :pattern :spec]

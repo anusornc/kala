@@ -289,20 +289,52 @@
           (core/err :transact/bad-lookup-ref
                     "No entity matches the lookup ref" {:ref ref}))))))
 
-(defn- resolve-e [db kind e unique-holder unique {:keys [temps ensure-temp upsert-claimants registering?]} op]
+;; ADR-0009: a registration tempid upserts onto the ident's existing holder
+;; — unless this very transaction retracts that ident from its holder
+;; (ADR-0007's "retract here, define elsewhere"), in which case the tempid
+;; must still mint its own entity. The retraction is detectable only up
+;; front, from the written ops: both [:db/retract e :db/ident v] and
+;; retractEntity name their target, so the holders they kill resolve
+;; against db-before. A transaction function that splices such a retraction
+;; is out of this reach — its registration then upserts, and net-state-wins
+;; (ADR-0003) gives the retraction the last word.
+(defn- retracted-ident-holders [db tx-data]
+  (into #{}
+        (comp (filter vector?)
+              (keep (fn [[head e a :as op]]
+                      (cond
+                        (and (= head :db/retract) (= a :db/ident))
+                        (try (resolve-static-e db e) (catch Exception _ nil))
+                        (contains? retract-entity-ops head)
+                        (try (resolve-static-e db e) (catch Exception _ nil))
+                        :else nil))))
+        tx-data))
+
+(defn- resolve-e [db kind e unique-holder unique {:keys [temps ensure-temp upsert-claimants registering? retracted-holders upserted-idents]} op]
   (cond
     (vector? e) (resolve-lookup-ref db e op)
     (or (string? e) (and (not (int? e)) (not (keyword? e))))
-    ;; user tempid (string) or internal opaque tempid from map form. A
-    ;; schema REGISTRATION tempid mints its own entity and never upserts:
-    ;; the unique value it claims may still be held by an entity whose
-    ;; retraction lands later in the same transaction (ADR-0007's "retract
-    ;; here, define elsewhere"), and upserting here would hand the old
-    ;; entity's identity to the new registration.
+    ;; user tempid (string) or internal opaque tempid from map form.
     (if (or (= :db/retract kind) registering?)
-      (do (when (= :db/retract kind)
-            (core/err :transact/bad-entity "Cannot retract using a tempid" {:op op}))
-        (ensure-temp db e))
+      (cond
+        (= :db/retract kind)
+        (do (core/err :transact/bad-entity "Cannot retract using a tempid" {:op op}))
+        ;; A registration tempid resolves to the entity already holding
+        ;; the ident (ADR-0009): re-running a schema transaction is a
+        ;; no-op and an ident keeps exactly one holder — minting instead
+        ;; made the registry order-dependent and split peer/client entid
+        ;; (the trial's duplicate idents, #53). The exception is the one
+        ;; ADR-0007 was written for: when this transaction retracts the
+        ;; ident from its holder ("retract here, define elsewhere"),
+        ;; upserting would hand the old entity's identity to the new
+        ;; registration, so the tempid still mints.
+        (and unique-holder
+             (= :db/ident (nth op 2 nil))
+             (not (contains? retracted-holders unique-holder)))
+        (do (vswap! upserted-idents conj (nth op 3 nil))
+            (vswap! temps assoc e unique-holder)
+            [db unique-holder])
+        :else (ensure-temp db e))
       (let [allocated (get @temps e)]
         (cond
           (and unique-holder allocated (not= allocated unique-holder))
@@ -581,6 +613,29 @@
       (register-new-entities datoms)
       (prune-retracted-schema datoms)))
 
+;; The upsert's one hard edge: a registration may not change the value
+;; type of the attribute it lands on. Datomic treats :db/valueType as
+;; immutable, and the accident this catches is re-running an edited
+;; schema file — the old data keeps its type's datoms while the attribute
+;; validates a different one (the rerun that silently hid alice from
+;; every query before ADR-0009). Cardinality and unique alterations keep
+;; following the ordinary rules; only valueType is refused.
+(defn- check-upserted-value-types! [db-before db-after upserted]
+  (let [idents-by-eid (into {} (map (fn [[k v]] [v k])) (::core/idents db-after))
+        vt-aid (get (::core/idents db-after) :db/valueType)
+        vt (fn [db e]
+             (some->> (current-datom-any-v db e vt-aid) :v idents-by-eid))]
+    (doseq [ident upserted
+            :let [holder (get (::core/idents db-after) ident)]]
+      ;; the registry lags a valueType-only change (it re-derives from
+      ;; :db/ident datoms), so both sides read the holder's actual datom
+      (let [was (vt db-before holder)
+            now (vt db-after holder)]
+        (when (and was now (not= was now))
+          (core/err :transact/schema-conflict
+                    "A registration cannot change an attribute's value type"
+                    {:attribute ident :was was :now now}))))))
+
 (defn transact-report
   "Pure transaction: applies tx-data against a db value and returns the
   report {:db-before :db-after :t :tx-data :tempids :raw-datoms} WITHOUT
@@ -596,6 +651,8 @@
         tx (eid/tx-eid t)
         temps (volatile! {tx-tempid tx})
         upsert-claimants (volatile! {})
+        upserted-idents (volatile! #{})
+        retracted-holders (retracted-ident-holders db-before tx-data)
         ensure-temp (fn [db tempid]
                       (if-some [e (get @temps tempid)]
                         [db e]
@@ -606,7 +663,9 @@
         txn {:tx tx
              :temps temps
              :ensure-temp ensure-temp
-             :upsert-claimants upsert-claimants}
+             :upsert-claimants upsert-claimants
+             :retracted-holders retracted-holders
+             :upserted-idents upserted-idents}
         ;; The op pass, in two phases (ADR-0007): schema-registration ops —
         ;; adds writing the bootstrap schema attributes — apply first, the
         ;; registry re-derives, and then everything else applies. Fresh
@@ -661,8 +720,10 @@
               [db-mid schema-datoms]
               (if (seq schema-elements)
                 (let [[db1 d1] (run-ops db-before (expand db-before schema-elements)
-                                        (assoc txn :registering? true) tx-fn-fuel)]
-                  [(derive-schema db1 d1) d1])
+                                        (assoc txn :registering? true) tx-fn-fuel)
+                      db2 (derive-schema db1 d1)
+                      _ (check-upserted-value-types! db-before db2 @upserted-idents)]
+                  [db2 d1])
                 [db-before []])
               [db-final data-datoms] (run-ops db-mid (expand db-mid data-elements)
                                               txn tx-fn-fuel)]

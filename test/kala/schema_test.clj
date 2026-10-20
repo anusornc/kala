@@ -226,6 +226,32 @@
             (assert-error :transact/unknown-attribute
                           (api/transact conn [[:db/add "r" :t/weight 32]]))))))))
 
+(deftest registration-upserts-onto-the-idents-holder
+  ;; ADR-0009: a registration whose ident already has a holder resolves to
+  ;; that holder — re-running a schema transaction is a no-op and an ident
+  ;; keeps exactly one holder. Before this, a rerun minted a second
+  ;; attribute entity, the registry flipped to it, and every datom of the
+  ;; old type vanished from queries.
+  (let [conn (fresh-conn)]
+    (define! conn "n" :t/name :db.type/string)
+    (api/transact conn [[:db/add "a" :t/name "Alice"]])
+    (let [attr (api/entid (api/db conn) :t/name)]
+      (testing "re-running the same registration upserts, minting nothing"
+        (let [{:keys [tempids]} (api/transact conn [[:db/add "n" :db/ident :t/name]
+                                                    [:db/add "n" :db/valueType :db.type/string]
+                                                    [:db/add "n" :db/cardinality :db.cardinality/one]])]
+          (is (= attr (get tempids "n")))
+          (is (= 1 (count (api/q '[:find ?e :where [?e :db/ident :t/name]] (api/db conn)))))))
+      (testing "the data the registration carried stays queried"
+        (is (= #{["Alice"]} (set (api/q '[:find ?n :where [_ :t/name ?n]] (api/db conn))))))
+      (testing "a registration cannot change the attribute's value type"
+        (assert-error :transact/schema-conflict
+                      (api/transact conn [[:db/add "m" :db/ident :t/name]
+                                          [:db/add "m" :db/valueType :db.type/long]]))
+        (testing "and the refused transaction left nothing behind"
+          (is (= attr (api/entid (api/db conn) :t/name)))
+          (is (= #{["Alice"]} (set (api/q '[:find ?n :where [_ :t/name ?n]] (api/db conn))))))))))
+
 ;; ---- cardinality ------------------------------------------------------------
 
 (deftest cardinality-many-duplicate-add-is-a-noop
