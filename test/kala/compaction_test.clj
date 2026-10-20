@@ -199,6 +199,87 @@
                                (filter #(= :x/name (:a %)) (api/datoms h :eavt [alice]))))
                      ["alice" true])))))
 
+(deftest compaction-crash-windows-replay-identically
+  ;; ADR-0008's crash claim, executed rather than argued: every window
+  ;; between the checkpoint put and the end of the prune replays to the
+  ;; same store. The simulation is exact at the protocol level — the
+  ;; checkpoint put is the only durable act before pruning starts, and a
+  ;; partial prune is just a log missing some pre-base entries.
+  (let [dir (tmp-dir)
+        {:keys [conn] :as built} (build-store! {:storage :file :path dir})
+        before (project (api/db conn))
+        base (:t built)
+        s (api/db-storage (api/db conn))]
+    (testing "dies after the checkpoint put, before any pruning"
+      (storage/put-segment s storage/checkpoint-segment-id
+                           (compaction/checkpoint (api/db conn)))
+      (let [reopened (api/connect {:storage :file :path dir})]
+        (is (= base (api/db-t (api/db reopened))))
+        (is (= before (project (api/db reopened))))))
+    (testing "dies mid-prune: pre-base leftovers are skipped by range"
+      (storage/prune-log! s (- base 2))
+      (let [reopened (api/connect {:storage :file :path dir})]
+        (is (= before (project (api/db reopened))))))
+    (testing "the surviving process finishes the job; the store stays whole"
+      (let [report (api/compact conn)]
+        (is (= base (:t report)))
+        (is (empty? (storage/log-scan s 0 base)))
+        (is (= before (project (api/db conn))))
+        (api/transact conn [[:db/add "post" :x/name "post-crash"]])
+        (is (contains? (set (map first (api/q names-q (api/db conn))))
+                       "post-crash"))))))
+
+(deftest monotonic-guard-after-compaction-memory
+  ;; the memory backend's prune floor, the twin of the file adapter's
+  ;; reopen floor: an emptied log still rejects a stale t
+  (let [{:keys [conn]} (build-store! {:storage :memory})]
+    (api/compact conn)
+    (is (thrown-with-msg? Exception #"strictly increasing"
+                          (storage/append-log (api/db-storage (api/db conn))
+                                              {:t 2 :datoms []})))))
+
+(deftest compaction-races-concurrent-client-writes-without-loss
+  ;; compact! is safe to interleave with live writes (its docstring
+  ;; claims it; this proves it): concurrent client transacts through a
+  ;; real transactor while compaction runs on the transactor's own peer
+  ;; connection — the callers never share a lock. Every tx that acked
+  ;; must survive, whether it landed before the base (in the checkpoint)
+  ;; or after it (in the tail), across a reopen.
+  (let [dir (tmp-dir)
+        t (tx/start! {:storage :file :path dir :port 0})
+        per-writer 50
+        writers 4]
+    (try
+      (api/transact (:conn t) schema)
+      (let [acks (atom 0)
+            fs (mapv (fn [w]
+                       (future
+                         (let [conn (client/connect {:host "127.0.0.1" :port (:port t)})]
+                           (try
+                             (mapv (fn [i]
+                                     (api/transact conn
+                                                   [[:db/add (str "w" w "i" i)
+                                                     :x/name (str "writer " w " #" i)]])
+                                     (swap! acks inc))
+                                   (range per-writer))
+                             (finally (client/close conn))))))
+                     (range writers))]
+        ;; overlap, deterministically enough: compact as soon as the first
+        ;; ack lands — the writers still have almost everything to go
+        (loop [] (when (zero? @acks) (Thread/sleep 1) (recur)))
+        (let [report (api/compact (:conn t))]
+          (doseq [f fs] (deref f))
+          (let [expected (set (for [w (range writers), i (range per-writer)]
+                                (str "writer " w " #" i)))
+                reopened (api/connect {:storage :file :path dir})
+                got (set (map first (api/q names-q (api/db reopened))))]
+            (testing "every acked write survives the race and the reopen"
+              (is (= expected got)))
+            (testing "the base sits at or before everything that followed it"
+              (is (<= (:t report) (api/db-t (api/db reopened))))))))
+      (finally
+        ((:stop! t))))))
+
 (deftest compaction-is-peer-only
   (let [t (tx/start! {:storage :memory :port 0})]
     (try
