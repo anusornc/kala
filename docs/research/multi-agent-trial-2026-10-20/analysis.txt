@@ -1,0 +1,41 @@
+Store's own account — analyze.clj against the transactor, 2026-10-20 ~15:56Z,
+after all four agents had finished (store.edn is the export of this state).
+
+=== turns per session: [t ordinal] ===
+runbook-keeper   [[6 1]]
+claude           [[11 1]]
+grok             [[12 1]]
+agy              [[13 1]]
+qwen             [[14 1]]
+
+=== citations: who cited whose turn (:memory/source datoms) ===
+turn t=12  by grok    cites t=11  by claude
+turn t=13  by agy     cites t=11  by claude
+turn t=13  by agy     cites t=12  by grok
+turn t=14  by qwen    cites t=11  by claude
+turn t=14  by qwen    cites t=13  by agy
+
+=== :proj/runbook correction trail (from context :corrections, as-of 14) ===
+:proj/deploy-command   "./deploy.sh staging-old" asserted 6, until 11 -> "./deploy.sh staging-eu"
+:proj/deploy-target    "staging-old"             asserted 6, until 11 -> "staging-eu"
+:proj/note             runbook-keeper's (6) -> claude's (11) -> grok's (12) -> agy's (13) -> qwen's (14)
+
+The deploy target and command changed exactly once, at t=11 (claude).
+grok, agy, and qwen each re-asserted the identical values; cardinality-one
+re-assertion of an equal value produced no new datoms. :proj/note, a
+single-valued attribute, was replaced by every turn — all four agents
+noticed and said so in their notes.
+
+=== deployments.log (ops-repo, real deploy.sh runs) ===
+2026-10-20T15:43:19Z deployed to staging-eu   (claude)
+2026-10-20T15:45:00Z deployed to staging-eu   (grok)
+2026-10-20T15:46:00Z deployed to staging-eu   (agy)
+2026-10-20T15:46:49Z deployed to staging-eu   (qwen)
+
+=== ident ambiguity found while analyzing ===
+(api/q '[:find ?e :where [?e :db/ident :proj/runbook]] db)
+=> [[4398046511111] [4398046511112]]
+4398046511111 is the vocabulary attribute :proj/runbook (string, card-one);
+4398046511112 is the runbook data entity the agents wrote to. api/entid
+returned ...111 over the wire; the seed-time peer had returned ...112.
+Isolated and filed as #53.

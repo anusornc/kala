@@ -1,0 +1,63 @@
+I'll start by loading what the kala memory store believes, then deploy from the repo root using that belief.Kala is available. I'll load the belief state before touching the repo.Memory already has a correction from session `claude`: deploy target `staging-eu`. I'll verify that against the repo docs and the deploy command before writing anything.Deploy succeeded. I'll reload memory immediately before recording so I don't overwrite a fresher correction.Staging deploy succeeded. Memory already named `staging-eu`, I ran that command from the repo root, and I recorded a verification turn that cites Claude's correction.
+
+## What memory said
+
+Before any write, `context` was at **t 11**. Current beliefs on `:proj/runbook` (eid `4398046511112`):
+
+| Attribute | Value |
+|---|---|
+| `:proj/deploy-command` | `./deploy.sh staging-eu` |
+| `:proj/deploy-target` | `staging-eu` |
+| `:proj/test-command` | `bash scripts/test.sh` |
+| `:proj/note` | Claude's correction: `staging-old` was retired the week of 2026-10-10; `DEPLOY.md` and `infra/targets.txt` list `staging-eu`. Claude had run `./deploy.sh staging-eu` from the repo root and got `DEPLOY-OK staging-eu` (exit 0). |
+
+The correction trail showed the keeper's original values, asserted at t 6 and replaced at t 11: command `./deploy.sh staging-old`, target `staging-old`, note `run deploy from the repo root`.
+
+Sessions present: `runbook-keeper` (t 6, turn 1) and `claude` (t 11, turn 1). `agy` and `qwen` had no turns. I called `context` again immediately before recording; it was still t 11.
+
+## Commands and output
+
+From `/private/tmp/kala-agents2/ops-repo`:
+
+```text
+$ ./deploy.sh staging-eu; echo "EXIT:$?"
+DEPLOY-OK staging-eu
+EXIT:0
+```
+
+```text
+$ rtk read infra/deployments.log
+2026-10-20T15:43:19Z deployed to staging-eu
+2026-10-20T15:45:00Z deployed to staging-eu
+```
+
+The second line is this run. Docs checked before the run: `DEPLOY.md` names **staging-eu** and says `staging-old` was retired the week of 2026-10-10; `infra/targets.txt` lists `staging-eu` and `prod-eu`. `deploy.sh` accepts only targets in that file and must be run from the repo root.
+
+## What failed
+
+The command memory held did not fail. Claude had already replaced `staging-old` with `staging-eu` at t 11 (tx `8796093022219`). I verified that correction against the docs and by running the deploy, and I left the command and target as they were.
+
+## What I recorded
+
+Re-asserted `:proj/deploy-command` `./deploy.sh staging-eu` and `:proj/deploy-target` `staging-eu` on eid `4398046511112`. Those adds matched the current values, so history shows no new datoms for them. Claude and I corrected the same two attributes; Claude's values stayed. I replaced `:proj/note` with the verification above, including that both sessions corrected those attributes and that `agy` and `qwen` had not written yet.
+
+Cited Claude's turn on this transaction: `:memory/source` `8796093022219` (t 11). That is the turn that produced the corrected target this run used.
+
+## What `record` returned
+
+```text
+{:t 12, :turn 1, :tx 8796093022220, :tempids {}, :datoms 5}
+```
+
+The new transaction has `:memory/source [8796093022219]`. A follow-up `context` is at t 12 with `grok` as turn `[[12 1]]`.
+
+## Other sessions
+
+| Session | Turns seen | Cited |
+|---|---|---|
+| `runbook-keeper` | t 6, turn 1, tx `8796093022214` (original `staging-old` belief) | No |
+| `claude` | t 11, turn 1, tx `8796093022219` (correction to `staging-eu`) | Yes, as `:memory/source` |
+| `agy` | none | — |
+| `qwen` | none | — |
+| `grok` (this session) | t 12, turn 1, tx `8796093022220` | — |
+exit=0

@@ -1,0 +1,91 @@
+### Project Summary
+
+This task verified and executed the staging deployment workflow in [`/tmp/kala-agents2/ops-repo`](file:///tmp/kala-agents2/ops-repo), coordinated runbook state across concurrent agent sessions (`claude`, `grok`, `agy`, `qwen`) via the `kala` memory store, and recorded our verified findings with provenance citations.
+
+---
+
+### 1. What Memory Said
+
+#### Initial `context` (as-of `t = 11`)
+When we first called `context` before touching anything, `runbook-keeper` had asserted the original beliefs at `t = 6` (`tx = 8796093022214`), and session `claude` had already recorded a correction at `t = 11` (`tx = 8796093022219`):
+- **Original (`t = 6`, `runbook-keeper`)**:
+  - `:proj/deploy-command`: `"./deploy.sh staging-old"`
+  - `:proj/deploy-target`: `"staging-old"`
+  - `:proj/test-command`: `"bash scripts/test.sh"`
+  - `:proj/note`: `"run deploy from the repo root"`
+- **Current at start (`t = 11`, `claude`)**:
+  - `:proj/deploy-command`: `"./deploy.sh staging-eu"`
+  - `:proj/deploy-target`: `"staging-eu"`
+  - `:proj/test-command`: `"bash scripts/test.sh"`
+  - `:proj/note`: `"Corrected by session claude: staging-old was retired the week of 2026-10-10; DEPLOY.md and infra/targets.txt list staging-eu. Verified by running ./deploy.sh staging-eu from repo root -> DEPLOY-OK staging-eu (exit 0). Must run from repo root. No other session had corrected these attributes when I recorded; no other turn cited (evidence was DEPLOY.md + my own run)."`
+
+#### Pre-write `context` (as-of `t = 12`)
+Before writing our turn, we called `context` again and saw that session `grok` had recorded turn 1 at `t = 12` (`tx = 8796093022220`), updating `:proj/note` after verifying `claude`'s correction and citing `claude`'s transaction (`8796093022219`).
+
+Resolving `:proj/runbook` via `read` and `recall` gave entity ID **`4398046511112`**.
+
+---
+
+### 2. Exact Commands Run & Real Output
+
+All commands were executed from `/tmp/kala-agents2/ops-repo`:
+
+1. **Testing the retired target (`./deploy.sh staging-old`) to confirm failure mode**:
+   ```bash
+   ./deploy.sh staging-old
+   ```
+   **Output** (exit code `1`):
+   ```text
+   deploy failed: unknown target 'staging-old' — check DEPLOY.md
+   ```
+
+2. **Running the corrected staging deploy command from memory (`./deploy.sh staging-eu`)**:
+   ```bash
+   ./deploy.sh staging-eu
+   ```
+   **Output** (exit code `0`):
+   ```text
+   DEPLOY-OK staging-eu
+   ```
+   This appended `2026-10-20T15:46:00Z deployed to staging-eu` to [`deployments.log`](file:///tmp/kala-agents2/ops-repo/infra/deployments.log#L1-L3).
+
+---
+
+### 3. What Failed and Why
+
+- **What failed**: Running [`deploy.sh`](file:///tmp/kala-agents2/ops-repo/deploy.sh#L1-L11) with the original runbook target `staging-old` fails with `deploy failed: unknown target 'staging-old' — check DEPLOY.md` (exit status `1`).
+- **Why**: [`deploy.sh`](file:///tmp/kala-agents2/ops-repo/deploy.sh#L6-L9) validates the target against [`targets.txt`](file:///tmp/kala-agents2/ops-repo/infra/targets.txt#L1-L2) using `grep -qx "$TARGET" infra/targets.txt`. Per [`DEPLOY.md`](file:///tmp/kala-agents2/ops-repo/DEPLOY.md#L1-L6), `staging-old` was retired the week of `2026-10-10` and replaced by **`staging-eu`** (`infra/targets.txt` contains only `staging-eu` and `prod-eu`).
+
+---
+
+### 4. What Was Corrected in Memory & What `record` Returned
+
+Using plain entity ID `4398046511112` for `:proj/runbook`, we recorded our verification of `:proj/deploy-target` (`"staging-eu"`), `:proj/deploy-command` (`"./deploy.sh staging-eu"`), and updated `:proj/note` to explicitly note that `claude`, `grok`, and `agy` all corrected/verified the same attributes while citing both `claude`'s and `grok`'s turns via `:memory/source`:
+
+**`tx-data` submitted to `record`**:
+```clojure
+[[:db/add "datomic.tx" :memory/source 8796093022219]
+ [:db/add "datomic.tx" :memory/source 8796093022220]
+ [:db/add 4398046511112 :proj/deploy-target "staging-eu"]
+ [:db/add 4398046511112 :proj/deploy-command "./deploy.sh staging-eu"]
+ [:db/add 4398046511112 :proj/note "Sessions claude (t 11, tx 8796093022219), grok (t 12, tx 8796093022220), and agy all corrected/verified the same attributes (:proj/deploy-target to staging-eu, :proj/deploy-command to ./deploy.sh staging-eu, and :proj/note); qwen had no turns as-of t 12. Session agy verified both claude's and grok's corrections against DEPLOY.md and infra/targets.txt (staging-old retired week of 2026-10-10; valid targets are staging-eu and prod-eu), confirmed ./deploy.sh staging-old fails with exit 1, and ran ./deploy.sh staging-eu from repo root -> DEPLOY-OK staging-eu (exit 0; logged 2026-10-20T15:46:00Z in infra/deployments.log). Citing both claude's and grok's turns via :memory/source."]]
+```
+
+**`record` return value**:
+```clojure
+{:t 13, :turn 1, :tx 8796093022221, :tempids {}, :datoms 6}
+```
+
+---
+
+### 5. Coordination: Other Sessions Seen & Turns Cited
+
+- **Sessions seen in memory**:
+  - `runbook-keeper`: turn 1 at `t = 6` (`tx = 8796093022214`) — initial stale runbook state.
+  - `claude`: turn 1 at `t = 11` (`tx = 8796093022219`) — first corrected `:proj/deploy-target` and `:proj/deploy-command` to `staging-eu` / `./deploy.sh staging-eu` and updated `:proj/note`.
+  - `grok`: turn 1 at `t = 12` (`tx = 8796093022220`) — verified `claude`'s correction and updated `:proj/note`.
+  - `qwen`: not seen in memory (had 0 turns as of `t = 12`).
+- **Turns cited via `:memory/source`**:
+  - **`8796093022219`** (`claude`'s turn 1 at `t = 11`), which produced the corrected deploy target (`staging-eu`) and deploy command (`./deploy.sh staging-eu`) that we verified and ran.
+  - **`8796093022220`** (`grok`'s turn 1 at `t = 12`), which corroborated the verification and updated `:proj/note` immediately prior to our write.
+exit=0

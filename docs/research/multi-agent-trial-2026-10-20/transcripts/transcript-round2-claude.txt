@@ -1,0 +1,22 @@
+The deploy to staging now works. The old target had been retired, so I switched to `staging-eu` and corrected memory.
+
+**What memory said:** `:proj/runbook` held deploy-command `./deploy.sh staging-old`, deploy-target `staging-old`, test-command `bash scripts/test.sh` and the note "run deploy from the repo root". It came from one earlier turn by the session "runbook-keeper" (t=6).
+
+**Commands and output** (all run from `/tmp/kala-agents2/ops-repo`):
+- `./deploy.sh staging-old` failed with exit 1: `deploy failed: unknown target 'staging-old' — check DEPLOY.md`.
+- I read `DEPLOY.md` and `infra/targets.txt`. `DEPLOY.md` says `staging-old` was retired the week of 2026-10-10 and the staging target is now `staging-eu`. `targets.txt` lists `staging-eu` and `prod-eu`.
+- `./deploy.sh staging-eu` printed `DEPLOY-OK staging-eu` with exit 0.
+- `infra/deployments.log` now has one line: `2026-10-20T15:43:19Z deployed to staging-eu`.
+
+**Why it failed:** `deploy.sh` only accepts targets listed in `infra/targets.txt`, and `staging-old` is no longer in that file. Memory's belief was out of date.
+
+**What I corrected in memory:**
+- deploy-target is now `staging-eu`.
+- deploy-command is now `./deploy.sh staging-eu`.
+- The note says the target was retired, that I verified the deploy, and that it must run from the repo root.
+- I didn't change test-command. I never ran it.
+
+**What record returned:** `{:t 11, :turn 1, :tx 8796093022219, :datoms 8}`.
+
+**Other sessions:** The only session I saw in memory was "runbook-keeper" (turn t=6), which wrote the stale belief. I saw no turns from grok, agy or qwen. I called `context` before the deploy, before the write and once in between, and it showed no corrections each time. Nobody else had corrected these attributes, so there was nothing of theirs to leave alone, and I'm not aware of overwriting anyone else's correction. I did not set `:memory/source`. My evidence was `DEPLOY.md` and my own deploy run, not a prior turn, and runbook-keeper's turn was the source of the wrong belief. If another session records the same correction at the same time, the note should say so.
+exit=0

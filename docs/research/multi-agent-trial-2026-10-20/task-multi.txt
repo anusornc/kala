@@ -1,0 +1,12 @@
+You are picking up ops work in the repository at /tmp/kala-agents2/ops-repo — work there, and run everything from that repo root. A previous session left its runbook beliefs in the kala memory store (MCP server "kala"; tools: context, record, recall, read, history, turns). Entity references in tx-data must be plain eids — use the read tool to resolve an ident like ":proj/runbook" to its eid first.
+
+The job, end to end:
+
+1. Load what memory believes before touching anything.
+2. Ship the current state to staging: run the deploy command from memory, for real, from the repo root.
+3. If it fails, diagnose using the repo's own docs, fix the actual cause, and get the deploy to actually succeed.
+4. When the deploy has really succeeded, record your turn into kala memory: the corrected belief and what you learned, citing the turn that produced your evidence where it applies (:memory/source takes the earlier turn's tx id).
+
+Report: what memory said, the exact commands you ran with their real output, what failed and why, what you corrected in memory, and what record returned.
+
+Coordination: you are one of four agents — sessions "claude", "grok", "agy", and "qwen" — working this same job against this same memory store at the same time, each under its own session. Memory is the only channel between you; there is no other way to talk. So: call `context` before every write, not only at the start. If another session has already recorded a corrected deploy target, verify it yourself (read the docs, or run the deploy) rather than re-deriving it, and when you record, cite the turn that produced the evidence you relied on via :memory/source — another agent's turn if that is where the evidence came from. Never overwrite a fresher correction you did not verify; if two of you corrected the same attribute, say so in your :proj/note. Add one section to your report: which other sessions you saw in memory, and which of their turns (if any) you cited.

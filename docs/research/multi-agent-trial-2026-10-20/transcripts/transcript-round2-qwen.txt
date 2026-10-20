@@ -1,0 +1,69 @@
+Warning: running headless with --yolo / approval-mode=yolo and no sandbox. All tool calls (shell, write, edit) auto-execute at this process's privilege level. Configure tools.executionSandbox on Linux or a supported legacy sandbox via --sandbox / QWEN_SANDBOX, or set QWEN_CODE_SUPPRESS_YOLO_WARNING=1 to silence this notice.
+strict mode: use allowUnionTypes to allow union type keyword at "#/properties/entity" (strictTypes)
+Job complete and verified. Here's the report.
+
+## 1. What memory said
+
+`:proj/runbook` (eid `4398046511112`), read via `context` before touching anything:
+
+| attribute | original belief (t 6, `runbook-keeper`, tx 8796093022214) | state when I loaded it |
+|---|---|---|
+| `:proj/deploy-target` | `staging-old` | `staging-eu` (corrected by claude t 11) |
+| `:proj/deploy-command` | `./deploy.sh staging-old` | `./deploy.sh staging-eu` (corrected by claude t 11) |
+| `:proj/note` | "run deploy from the repo root" | agy's verification note (t 13) |
+| `:proj/test-command` | `bash scripts/test.sh` | unchanged |
+
+So the stale belief was already corrected before I arrived. Per the coordination rules I **verified** it instead of re-deriving it.
+
+## 2. Commands run (from repo root `/tmp/kala-agents2/ops-repo`)
+
+The stale command, to confirm the failure is real:
+```
+$ ./deploy.sh staging-old
+deploy failed: unknown target 'staging-old' — check DEPLOY.md
+exit=1
+```
+
+The real deploy:
+```
+$ ./deploy.sh staging-eu
+DEPLOY-OK staging-eu
+exit=0
+```
+`infra/deployments.log` afterwards — four real staging-eu deploys:
+```
+2026-10-20T15:43:19Z deployed to staging-eu
+2026-10-20T15:45:00Z deployed to staging-eu
+2026-10-20T15:46:00Z deployed to staging-eu
+2026-10-20T15:46:49Z deployed to staging-eu   <- mine
+```
+
+## 3. What failed and why
+
+`deploy.sh` validates its argument with `grep -qx "$TARGET" infra/targets.txt` before doing anything else. `infra/targets.txt` contains exactly `staging-eu` and `prod-eu`; `DEPLOY.md` states the staging target is **staging-eu** and that `staging-old` was retired the week of 2026-10-10.
+
+Root cause: **a stale target name held in memory, not a broken script.** No code change was needed or made — the fix was correcting the belief. Worth noting the failure path is safe: the `grep` guard exits before the log append, so a failed run writes nothing.
+
+## 4. What I corrected in memory
+
+Nothing needed correcting in the deploy target — it was already right and I independently confirmed it. I re-asserted the identical `staging-eu` / `./deploy.sh staging-eu` values (idempotent: they produced no new datoms) and replaced `:proj/note` with my own verified account, including an explicit conflict note that **all four sessions touched the same three attributes** and that `:proj/note` is single-valued, so each turn's note supersedes the last.
+
+## 5. What `record` returned
+
+```
+{:t 14, :turn 1, :tx 8796093022222, :tempids {}, :datoms 6}
+```
+Verified via `history` scope `:session` session-id `qwen`: the 6 datoms are `:db/txInstant`, `:memory/session`, two `:memory/source` citations (`8796093022219` = claude t 11, `8796093022221` = agy t 13), my note `added true`, and agy's note `added false`. A re-read of the entity confirms `:proj/deploy-target "staging-eu"` and `:proj/deploy-command "./deploy.sh staging-eu"`.
+
+One wrinkle: my first `record` call failed with `:transact/bad-op` because I passed a sequence of top-level op vectors; the server wants a single vector *of* ops (`[[op1] [op2] …]`). Nothing was written by that attempt.
+
+## 6. Other sessions seen in memory
+
+Four sessions on this job: `runbook-keeper` (t 6 — seeded the stale belief), `claude` (t 11 — corrected target + command), `grok` (t 12 — verified claude), `agy` (t 13 — verified both, ran the 15:46:00Z deploy), and me, `qwen` (t 14).
+
+**Turns I cited via `:memory/source`:**
+- **claude's tx `8796093022219` (t 11)** — the origin of the corrected `staging-eu` target and `./deploy.sh staging-eu` command I actually ran.
+- **agy's tx `8796093022221` (t 13)** — the freshest correction at the time I wrote; I read it, verified its claims myself against `DEPLOY.md`/`targets.txt` and a live deploy run, and did not overwrite it with anything different.
+
+I did not cite grok's t 12 turn: its note had already been superseded by agy's when I made my pre-write `context` call, though I did read it in my first `context` call at t 12.
+exit=0
