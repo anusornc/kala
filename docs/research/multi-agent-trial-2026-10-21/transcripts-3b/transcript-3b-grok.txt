@@ -1,0 +1,52 @@
+I'll start by loading what the kala memory store already believes, before changing anything in the repo.Kala is available. I'll load the belief state before reading the repo or running a deploy.The remembered deploy command exited 0 and printed `DEPLOY-OK staging-eu`. I'll check the repo docs and the memory schema so the follow-up record cites the right evidence.The stored command matches the runbook and the deploy wrote a log line. I'll record that confirmation, citing the earlier turn that set the command.The staging deploy succeeded. Memory already had the right command, and this session's check is now recorded as turn t=13.
+
+**What memory said.** Before any deploy, `:proj/runbook` (eid `4398046511111`) held:
+
+- `:proj/deploy-command` `./deploy.sh staging-eu`
+- `:proj/deploy-target` `staging-eu`
+- `:proj/test-command` `bash scripts/test.sh`
+- `:proj/note` that `staging-old` was retired on 2026-10-10, that valid targets are in `infra/targets.txt` (see `DEPLOY.md`), and that `./deploy.sh staging-eu` from the repo root prints `DEPLOY-OK`
+
+That command and target were written at t=11, replacing `./deploy.sh staging-old` and `staging-old` from t=6. `:memory/source` on that correction was tx `8796093022214` (the t=6 turn).
+
+**Commands and output.** From `/tmp/kala-agents2/ops-repo`:
+
+```text
+./deploy.sh staging-eu
+```
+
+```text
+exit: 0
+DEPLOY-OK staging-eu
+```
+
+A follow-up read of `infra/deployments.log` still showed only the two earlier lines, so the script was traced:
+
+```text
+bash -x ./deploy.sh staging-eu
+```
+
+```text
++ set -e
++ TARGET=staging-eu
++ '[' -z staging-eu ']'
++ grep -qx staging-eu infra/targets.txt
+++ date -u +%FT%TZ
++ echo '2026-10-21T08:18:30Z deployed to staging-eu'
++ echo 'DEPLOY-OK staging-eu'
+DEPLOY-OK staging-eu
+EXIT:0
+```
+
+The log then contained the appends, including `2026-10-21T08:18:20Z deployed to staging-eu` and `2026-10-21T08:18:30Z deployed to staging-eu`.
+
+**What failed and why.** The deploy did not fail. `DEPLOY.md` says the staging target is `staging-eu` (`staging-old` retired 2026-10-10) and that deploys run from the repo root as `./deploy.sh <target>`. `infra/targets.txt` lists `staging-eu` and `prod-eu`. `deploy.sh` rejects anything not in that file, then appends `infra/deployments.log` and prints `DEPLOY-OK`. No repo change was required.
+
+**What was recorded.** The command and target were already correct, so those values stayed. The note now records this run: exit 0, `DEPLOY-OK staging-eu`, and a log append. `:memory/source` cites tx `8796093022219`, the t=11 turn that asserted `./deploy.sh staging-eu`.
+
+**What record returned.**
+
+```text
+{:t 13, :turn 1, :tx 8796093022221, :tempids {}, :datoms 4}
+```
+exit=0

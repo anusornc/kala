@@ -1,0 +1,68 @@
+Warning: running headless with --yolo / approval-mode=yolo and no sandbox. All tool calls (shell, write, edit) auto-execute at this process's privilege level. Configure tools.executionSandbox on Linux or a supported legacy sandbox via --sandbox / QWEN_SANDBOX, or set QWEN_CODE_SUPPRESS_YOLO_WARNING=1 to silence this notice.
+Done. Here's the full report.
+
+## 1. What memory said
+
+`context` on arrival was **as-of t 11**, and the belief was already correct:
+
+| attr | value |
+|---|---|
+| `:proj/deploy-command` | `./deploy.sh staging-eu` |
+| `:proj/deploy-target` | `staging-eu` |
+| `:proj/test-command` | `bash scripts/test.sh` |
+| `:proj/note` | "run deploy from the repo root" + claude's t11 correction note |
+
+The corrections trail showed the stale belief had already been fixed: both attributes were `staging-old` / `./deploy.sh staging-old`, asserted at **t 6** by session `runbook-keeper`, retracted at **t 11** by `claude`.
+
+## 2. Commands I ran, with real output
+
+```
+$ pwd && ./deploy.sh staging-eu        # from /tmp/kala-agents2/ops-repo
+/tmp/kala-agents2/ops-repo
+DEPLOY-OK staging-eu
+exit=0
+```
+
+Side effect — appended to `infra/deployments.log`:
+```
+2026-10-21T08:39:17Z deployed to staging-eu
+```
+
+The staging deploy really shipped. The log now holds four lines (08:36:28, 08:37:48, 08:38:36, 08:39:17) — one per session, mine last.
+
+## 3. What failed, and why
+
+**Nothing failed** — the deploy succeeded on the first try. The known failure mode (`./deploy.sh staging-old` → exit 1, `unknown target`) had already been diagnosed and corrected by `claude` at t 11 before I started.
+
+Rather than trust that note, I verified the correction independently against the repo:
+- `DEPLOY.md`: "As of 2026-10-10 the staging target is **staging-eu** (`staging-old` was retired that week). Run deploys from the repo root."
+- `infra/targets.txt`: exactly `staging-eu`, `prod-eu` — no `staging-old`.
+- `deploy.sh` does `grep -qx "$TARGET" infra/targets.txt` and exits 1 otherwise, which is precisely why the retired target failed.
+
+Root cause of the original breakage: the store lagged the repo — `runbook-keeper` seeded `staging-old` at t 6 and never picked up the 2026-10-10 target retirement.
+
+## 4. What I corrected in memory
+
+**Nothing needed correcting.** I deliberately did *not* re-assert `:proj/deploy-target` or `:proj/deploy-command` — they were already right, and re-asserting identical values would only add noise to the correction trail. I wrote a single new `:proj/note` on eid `4398046511111` recording my independent verification and the real deploy, and flagging that it supersedes agy's t13 note because `:proj/note` is single-valued.
+
+`record` returned:
+```clojure
+{:t 14, :turn 1, :tx 8796093022222, :tempids {}, :datoms 6}
+```
+
+Verified via `history {:scope :session, :session-id "qwen"}` — the 6 datoms are `:db/txInstant`, `:memory/session 4398046511115`, three `:memory/source` citations, and the `:proj/note`. One extra `recall` query I ran to double-check was rejected (`:query/bad-attribute` — an open `?a` binding isn't allowed); it was redundant, `history` had already confirmed the write.
+
+## 5. Other sessions seen in memory, and which turns I cited
+
+Sessions present: **`runbook-keeper`** (t 6, tx `8796093022214`), **`claude`** (t 11, tx `8796093022219`), **`grok`** (t 12, tx `8796093022220`), **`agy`** (t 13, tx `8796093022221`).
+
+Cited in `:memory/source` on my turn:
+- **`8796093022219`** (claude, t 11) — origin of the correction I relied on and then verified.
+- **`8796093022220`** (grok, t 12) and **`8796093022221`** (agy, t 13) — corroboration I read in `context` before writing.
+
+Coordination notes: I called `context` immediately before the write (head was t 13) and my record landed cleanly at t 14 with no interleaving. All three other sessions converged on the same attribute values, so this was corroboration, not competing corrections — nothing to reconcile. `context` only exposes `:turns` as `[t ordinal]`, so I resolved the tx eids via `history` per-session.
+
+I also updated my own project memory: fixed a wrong runbook eid in that note's keywords (`4398046511112` → the confirmed `4398046511111`) and recorded the `history`-based tx-eid lookup needed for `:memory/source` citations.
+
+I did not run `bash scripts/test.sh` — the job was deploy-only.
+exit=0

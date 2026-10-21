@@ -1,0 +1,2 @@
+staging-eu
+prod-eu

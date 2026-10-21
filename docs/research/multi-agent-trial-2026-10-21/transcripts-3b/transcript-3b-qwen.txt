@@ -1,0 +1,64 @@
+Warning: running headless with --yolo / approval-mode=yolo and no sandbox. All tool calls (shell, write, edit) auto-execute at this process's privilege level. Configure tools.executionSandbox on Linux or a supported legacy sandbox via --sandbox / QWEN_SANDBOX, or set QWEN_CODE_SUPPRESS_YOLO_WARNING=1 to silence this notice.
+strict mode: use allowUnionTypes to allow union type keyword at "#/properties/entity" (strictTypes)
+Done. Here's the full report.
+
+## 1. What memory said
+
+`context` (as-of t 11) held four facts on `:proj/runbook`:
+
+| attr | value |
+|---|---|
+| `:proj/deploy-command` | `./deploy.sh staging-eu` |
+| `:proj/deploy-target` | `staging-eu` |
+| `:proj/test-command` | `bash scripts/test.sh` |
+| `:proj/note` | staging-old retired 2026-10-10; verified `./deploy.sh staging-eu` prints DEPLOY-OK |
+
+Corrections trail showed the belief had already been fixed once: seeded as `staging-old` at t 6 by `runbook-keeper`, corrected to `staging-eu` at t 11 by `claude`.
+
+## 2. Commands run, with real output
+
+I checked the authoritative repo docs first (`DEPLOY.md`, `infra/targets.txt` → `staging-eu`, `prod-eu`; `deploy.sh` greps the target against `infra/targets.txt`). They agreed with memory. Then, from the repo root:
+
+```
+$ cd /private/tmp/kala-agents2/ops-repo && pwd && ./deploy.sh staging-eu; echo "exit=$?"
+/private/tmp/kala-agents2/ops-repo
+DEPLOY-OK staging-eu
+exit=0
+```
+
+Confirmed the side effect landed — `infra/deployments.log` went from 4 lines to 5:
+
+```
+2026-10-21T08:19:08Z deployed to staging-eu
+```
+
+## 3. What failed and why
+
+**The deploy did not fail.** Step 3 didn't apply — the stored command was already correct, so there was no cause to diagnose and nothing to fix. I'm flagging this explicitly rather than dressing up a first-try success as a repair.
+
+What *did* go wrong was a **write race in memory**. I called `context` (head was t 12) and then recorded; my turn landed at t 14 — but `grok` had written t 13 in the gap, and because `:proj/note` is single-valued my write silently retracted grok's note. `history` caught it:
+
+```
+{:e 4398046511111, :a :proj/note, :v "Confirmed 2026-10-21 from the repo root: ./deploy.sh
+ staging-eu exits 0 and prints DEPLOY-OK staging-eu…", :t 14, :added false}
+```
+
+Grok's note was substantively identical to mine (it had also verified the deploy), so nothing load-bearing was lost — but I fixed the record anyway.
+
+## 4. What I corrected in memory
+
+- Recorded a **consolidating turn at t 15** whose `:proj/note` states the verified fact *and* discloses the clobber, naming grok's t 13 and qwen's t 14 as superseded, per the "if two agents corrected the same attribute, say so" rule.
+- Cited evidence via `:memory/source`: `8796093022219` (claude's t 11 correction) and `8796093022221` (grok's t 13 verification), on both the runbook entity and `"datomic.tx"`. Final value: `[8796093022214 8796093022219 8796093022221]`.
+- Left `:proj/deploy-command` / `:proj/deploy-target` untouched — they were correct, so re-asserting would have manufactured a fake correction in the trail.
+- Fixed two **wrong facts in my own project memory**: the runbook eid is `4398046511111`, not `4398046511112`, and claude's t 11 correction was 2026-10-21, not 2026-10-20. Added the observed t12/t13/t14 race as a concrete example, plus the tip that `read` echoes `:db/id` as an ident so the numeric eid must come from `history`.
+- Removed the redundant unindexed duplicate `project/kala-multi-agent-coordination.md` (strict subset of the indexed feedback memory).
+
+## 5. What `record` returned
+
+```
+t 14 → {:t 14, :turn 1, :tx 8796093022222, :tempids {}, :datoms 5}
+t 15 → {:t 15, :turn 2, :tx 8796093022223, :tempids {}, :datoms 7}
+```
+
+Verified by re-reading eid `4398046511111`: note, `deploy-command`, `deploy-target`, and all three `:memory/source` tx ids present as intended. `context` turns now read `runbook-keeper [6]`, `claude [11]`, `agy [12]`, `grok [13]`, `qwen [14, 15]`.
+exit=0

@@ -1,0 +1,71 @@
+### Project Summary
+The repository at `/tmp/kala-agents2/ops-repo` is an operations deployment workspace containing:
+- [deploy.sh](file:///tmp/kala-agents2/ops-repo/deploy.sh): Deployment script that validates the target against [targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt), logs the deployment timestamp to [deployments.log](file:///tmp/kala-agents2/ops-repo/infra/deployments.log), and outputs `DEPLOY-OK <target>`.
+- [DEPLOY.md](file:///tmp/kala-agents2/ops-repo/DEPLOY.md): Runbook documentation specifying that `staging-old` was retired on `2026-10-10` and `staging-eu` is the active staging target.
+- [targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt): Active deployment targets (`staging-eu` and `prod-eu`).
+- [test.sh](file:///tmp/kala-agents2/ops-repo/scripts/test.sh): Test runner script.
+
+---
+
+### 1. What Memory Said
+
+Calling `context` and `read` (plus `history` / `recall` to resolve `:proj/runbook` to eid `4398046511111`) showed two prior turns in the store:
+
+- **Initial belief (`as-of 6`, session `"runbook-keeper"`, tx `8796093022214`):**
+  - `:proj/deploy-command`: `"./deploy.sh staging-old"`
+  - `:proj/deploy-target`: `"staging-old"`
+  - `:proj/test-command`: `"bash scripts/test.sh"`
+  - `:proj/note`: `"run deploy from the repo root"`
+- **Prior correction (`as-of 11`, session `"claude"`, tx `8796093022219`, citing `:memory/source` `8796093022214`):**
+  - `:proj/deploy-command`: `"./deploy.sh staging-eu"` (corrected from `"./deploy.sh staging-old"`)
+  - `:proj/deploy-target`: `"staging-eu"` (corrected from `"staging-old"`)
+  - `:proj/note`: `"staging-old was retired 2026-10-10; valid targets are in infra/targets.txt (see DEPLOY.md). Verified: ./deploy.sh staging-eu from repo root prints DEPLOY-OK."`
+
+---
+
+### 2. Commands Run & Real Output
+
+From `/tmp/kala-agents2/ops-repo`:
+
+1. **Running the original `runbook-keeper` belief (`./deploy.sh staging-old`):**
+   ```text
+   $ ./deploy.sh staging-old
+   deploy failed: unknown target 'staging-old' — check DEPLOY.md
+   (exit code 1)
+   ```
+
+2. **Running the current staging deploy command (`./deploy.sh staging-eu`):**
+   ```text
+   $ ./deploy.sh staging-eu
+   DEPLOY-OK staging-eu
+   (exit code 0)
+   ```
+
+---
+
+### 3. What Failed and Why
+
+- **What failed:** Running `./deploy.sh staging-old` (from the initial `runbook-keeper` belief at `t=6`, tx `8796093022214`) fails with exit code `1` and `deploy failed: unknown target 'staging-old' — check DEPLOY.md`.
+- **Why:** [deploy.sh](file:///tmp/kala-agents2/ops-repo/deploy.sh#L6-L9) checks the target argument with `grep -qx "$TARGET" infra/targets.txt`. Per [DEPLOY.md](file:///tmp/kala-agents2/ops-repo/DEPLOY.md#L3-L4), `staging-old` was retired the week of `2026-10-10` and replaced by `staging-eu`. [targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt#L1-L2) only lists `staging-eu` and `prod-eu`.
+- **Fix:** Using target `staging-eu` (`./deploy.sh staging-eu`) succeeds (`DEPLOY-OK staging-eu`) and appends the UTC deployment entry to [deployments.log](file:///tmp/kala-agents2/ops-repo/infra/deployments.log).
+
+---
+
+### 4. What Was Corrected in Memory & What `record` Returned
+
+Resolved `:proj/runbook` to plain eid `4398046511111` and recorded our turn affirming the `staging-eu` deploy command/target, updating `:proj/note` with the exact verified output (`DEPLOY-OK staging-eu` and logging to `infra/deployments.log`), and citing both the initial `runbook-keeper` turn (`8796093022214`) and the `claude` turn (`8796093022219`) in `:memory/source`:
+
+**`tx-data` sent to `record`:**
+```edn
+[[:db/add 4398046511111 :proj/deploy-command "./deploy.sh staging-eu"]
+ [:db/add 4398046511111 :proj/deploy-target "staging-eu"]
+ [:db/add 4398046511111 :proj/note "staging-old was retired 2026-10-10; valid targets are in infra/targets.txt (see DEPLOY.md). Verified: ./deploy.sh staging-eu from repo root prints DEPLOY-OK staging-eu and appends to infra/deployments.log."]
+ [:db/add 4398046511111 :memory/source 8796093022214]
+ [:db/add 4398046511111 :memory/source 8796093022219]]
+```
+
+**Return value from `record`:**
+```edn
+{:t 12, :turn 1, :tx 8796093022220, :tempids {}, :datoms 5}
+```
+exit=0

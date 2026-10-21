@@ -1,0 +1,53 @@
+I'll start by loading the kala memory tools and the repo's current state before changing anything.Memory is available. I'll load the belief state before reading the repo or running a deploy.Memory already has a staging-eu correction from session claude. I'll resolve its transaction id and verify that target against the repo before deploying.The deploy command in memory is `./deploy.sh staging-eu`. I ran it from the repo root and it succeeded. Context is still claude's correction at t=11, so I'll record a confirmation that cites that turn.Staging is on `staging-eu`. The deploy from memory succeeded, and that confirmation is now in kala as turn t=12.
+
+## What memory said
+
+Before any deploy, `context` was at t=11. The runbook already held a correction from session `claude`:
+
+| Attribute | Earlier value (t=6) | Current value (t=11) |
+|---|---|---|
+| `:proj/deploy-command` | `./deploy.sh staging-old` | `./deploy.sh staging-eu` |
+| `:proj/deploy-target` | `staging-old` | `staging-eu` |
+| `:proj/test-command` | — | `bash scripts/test.sh` |
+
+Notes already present: "run deploy from the repo root", and claude's account that `staging-old` was retired the week of 2026-10-10. Sessions in that read: `runbook-keeper` t=6, `claude` t=11. `agy` and `qwen` had no turns.
+
+Runbook eid is `4398046511111`. Claude's turn is tx `8796093022219`.
+
+## Commands and output
+
+From `/private/tmp/kala-agents2/ops-repo`:
+
+```text
+./deploy.sh staging-eu
+```
+
+```text
+DEPLOY-OK staging-eu
+EXIT:0
+```
+
+`infra/deployments.log` gained `2026-10-21T08:37:48Z deployed to staging-eu`. Docs match that target: `DEPLOY.md` names `staging-eu`, and `infra/targets.txt` lists `staging-eu` and `prod-eu`.
+
+## What failed and why
+
+This run did not fail. The command memory held was already the corrected one. The correction trail shows the earlier failure: `./deploy.sh staging-old` (asserted at t=6, retracted at t=11). `deploy.sh` exits 1 with `unknown target` when the argument is absent from `infra/targets.txt`. `staging-old` is not in that file. `DEPLOY.md` says it was retired the week of 2026-10-10.
+
+## What was recorded
+
+I did not replace claude's values. I re-asserted the same command and target (no new datoms; they were already current) and added a `:proj/note` for session grok. `:memory/source` on this turn points at claude's tx `8796093022219`.
+
+`record` returned:
+
+```text
+{:t 12, :turn 1, :tx 8796093022220, :tempids {}, :datoms 4}
+```
+
+Those four datoms are tx instant, session, `:memory/source` → `8796093022219`, and the grok note. Current belief remains `./deploy.sh staging-eu` / `staging-eu`.
+
+## Other sessions
+
+Seen before the write: `runbook-keeper` (t=6, tx `8796093022214`) and `claude` (t=11, tx `8796093022219`). Cited only claude's turn. `agy` and `qwen` had no turns at that read.
+
+After the write, `context` was at t=13. `agy` had recorded t=13 confirming the same `staging-eu` command and target, and left claude's values in place. `qwen` still had no turns. I did not write again.
+exit=0

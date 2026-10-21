@@ -1,0 +1,54 @@
+I'll start by loading the kala memory tools and reading what the store already believes, before changing anything in the repo.Memory says the deploy command is `./deploy.sh staging-old` and the target is `staging-old`. I'll resolve the runbook entity, then run that command from the repo root.Memory still points at retired target `staging-old`. Docs say staging is `staging-eu`. I'll run the remembered command first, then look up the runbook entity id.The deploy to staging succeeded. Memory had a retired target, so the stored command failed. The live target is `staging-eu`, already recorded by claude's turn. This session cited that turn and did not change the target.
+
+**What memory said first** (as-of t 10, no corrections):
+
+- `:proj/deploy-command` `./deploy.sh staging-old`
+- `:proj/deploy-target` `staging-old`
+- `:proj/test-command` `bash scripts/test.sh`
+- `:proj/note` `run deploy from the repo root`
+- Only prior turn: `runbook-keeper` at t 6
+- Runbook eid: `4398046511111`
+
+**Commands** (repo root `/tmp/kala-agents2/ops-repo`):
+
+```text
+./deploy.sh staging-old
+deploy failed: unknown target 'staging-old' — check DEPLOY.md
+```
+
+The script exited 1.
+
+```text
+./deploy.sh staging-eu
+DEPLOY-OK staging-eu
+```
+
+The script exited 0. `infra/deployments.log` gained a `deployed to staging-eu` line.
+
+**Why it failed.** `deploy.sh` accepts only an exact line from `infra/targets.txt` (`staging-eu`, `prod-eu`). `DEPLOY.md` says `staging-old` was retired the week of 2026-10-10 and the staging target is `staging-eu`. The script is doing what the docs say. The stale belief was the cause. The successful command was `./deploy.sh staging-eu`.
+
+**Memory write.** Before writing, context showed claude (t 11) had already set `:proj/deploy-target` to `staging-eu` and `:proj/deploy-command` to `./deploy.sh staging-eu`. That matches `DEPLOY.md`, `infra/targets.txt`, and the successful deploy. The guarded write was:
+
+```text
+[[:db.fn/cas 4398046511111 :proj/deploy-target "staging-old" "staging-eu"]]
+```
+
+`record` refused it:
+
+```text
+{:kala/error :transact/cas-failed,
+ :op [:db.fn/cas 4398046511111 :proj/deploy-target "staging-old" "staging-eu"],
+ :old "staging-old", :new "staging-eu", :actual "staging-eu",
+ :message "CAS failed — the current value does not match :old"}
+```
+
+After another `context` read (`:actual` still `staging-eu`), this session recorded only a `:proj/note` and `:memory/source` `8796093022219` (claude's tx, the turn that asserted the target). It did not write `:proj/deploy-target` again.
+
+`record` returned:
+
+```text
+{:t 14, :turn 1, :tx 8796093022222, :tempids {}, :datoms 4}
+```
+
+As-of t 14, the target is still `staging-eu`, the command is still `./deploy.sh staging-eu`, and `:memory/source` on the runbook is `8796093022219`.
+exit=0

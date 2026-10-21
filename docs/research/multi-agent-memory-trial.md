@@ -124,7 +124,7 @@ story 7) rather than the citation story, and has not been run. Agents were
 told the coordination rules; a run with `task.txt` alone would show how
 much of the relay is kala's affordance versus the instruction.
 
-## Round 3 design (2026-10-21, not yet run)
+## Round 3 design (2026-10-21; run the same day — results below)
 
 Three variants, each isolating one variable round 2 left confounded. Every
 variant reuses the round-2 recipe unchanged apart from its delta — fresh
@@ -176,4 +176,106 @@ developer-owned vocabulary decision finding 2 pointed at, exercised for
 real; if cardinality-many is still not enough for multi-agent accounts,
 the residual is a `kala.memory` design question (per-session shaping of the
 context document), not a task-authoring one.
+
+## Round 3 results (2026-10-21)
+
+All three variants ran the same afternoon, in the order 3b → 3c → 3a, each
+against a fresh store with the full gate (seed, transactor on 4334, four
+client-mode configs, `probe.sh` answering four `10`s before any agent
+launched — all four passed first time). Harness, task texts, transcripts,
+analyses, and store exports live in `multi-agent-trial-2026-10-21/`.
+Everything below is the store's account (`analyze.clj` per variant) with
+transcripts as commentary.
+
+**3b — `task.txt` verbatim (affordance versus instruction).** The
+correction still converged: one target/command change, at t 11 (claude),
+everyone else adopted it, four real deploys (a fifth log line is grok
+running `bash -x ./deploy.sh` as a trace). Two measured deviations from
+the pre-registered prediction:
+
+- *The citation graph was not sparse.* Six `:memory/source` edges from
+  three of four agents (claude t11 → t6; agy t12 → t11; qwen t14/t15 →
+  t11, t13). The reason sits in the task's own text: `task.txt` step 4
+  already instructs citing "the turn that produced your evidence" — the
+  coordination paragraph only ever added the who-else-is-running rule.
+  "Affordance versus instruction" splits finer than the design assumed:
+  the cite instruction rode along in the base task.
+- *The clobber happened anyway, and the instruction-less agents handled
+  it well.* `:proj/note` was replaced at t 12, 13, 14, 15 exactly as
+  finding 2 predicts — but qwen caught the clobber via `history`, and
+  wrote a second, consolidating turn (t 15) that discloses it and cites
+  the superseded turns. Unprompted. Round 2 sharpens into: neither
+  affordance nor instruction prevented the clobber (round 2's
+  coordination rule didn't either); the history is what preserves every
+  voice, and a diligent agent can self-repair from it. The schema fix
+  (3c) is what removes it.
+
+One caveat on interpreting 3b as "pure affordance": qwen's transcript
+shows it editing its own project memory mid-run and quoting the round-2
+"say so" rule that `task.txt` does not contain — Qwen Code carries
+per-project memory across sessions, so its round-2 learning leaked in.
+The store-level results (one correction, clobber chain, citations) stand
+regardless; qwen's polished coordination behavior should not be read as
+emergent from kala alone.
+
+**3c — `:proj/note` cardinality-many (finding 2 fixed at the schema).**
+Success signal met exactly. After all four record, `context`'s `:current`
+shows five notes at once — runbook-keeper's seeded note plus one per
+session (claude t 11, grok t 12, agy t 13, qwen t 14), each self-labelled
+"session <name>" — with no history excavation. The corrections trail
+holds only the two real t 11 corrections; no agent turn retracts
+anything, and each session wrote exactly one turn. The relay is the
+cleanest of the three rounds: grok cites claude, agy cites claude, qwen
+cites claude + grok + agy (grok's citation lands in the store this time).
+Comic counterpoint: qwen's note carries a "WARNING for readers:
+:proj/note is single-valued" — its stale round-2 belief, contradicted by
+the very document it wrote into, and harmless because a cardinality-many
+add never retracts. Cardinality-many was sufficient; no residual
+`kala.memory` design question.
+
+**3a — simultaneous starts, `:db.fn/cas` (spec story 7, first live
+exercise).** Success signal met: exactly one successful target change in
+the store (claude t 11, via two successful `:db.fn/cas` ops — target and
+command together), and three `:transact/cas-failed` refusals in the
+transcripts that wrote nothing:
+
+- agy read `context` at `:as-of 11` — claude's change already landed —
+  and *still* attempted the cas against the `staging-old` it had read
+  first. Refused, `:actual "staging-eu"`. The guard catching a stale
+  read is precisely the race this variant was built to expose.
+- qwen and grok, who read before claude wrote, hit the same refusal and
+  each took the "record only the note" branch; nobody retried the cas.
+- The refusal's shape — `{:kala/error :transact/cas-failed, :op …,
+  :old …, :new …, :actual "staging-eu", :message …}` — carried
+  everything the agents needed; all three recovered on the first
+  attempt. The store enforced "never overwrite a fresher correction you
+  did not verify" that round 2 achieved by instruction alone.
+
+Four real deploys, one per session. Citations: agy → claude (both
+op-level and turn-level), qwen → claude; near-empty as predicted, since
+nobody could go second on purpose. One repeat of the 3b anomaly: grok's
+note says it cited the turn that set the target, and the store holds no
+such datom.
+
+**Cross-round findings.**
+
+1. CAS works end to end through MCP with LLM agents, including the
+   interesting failure direction — a refusal against a value the agent
+   had already seen change. Spec story 7 is exercised, not just claimed.
+2. The self-report gap is now measured, not hypothetical: grok twice
+   reported a `:memory/source` citation the store does not contain (3b
+   t 13, 3a t 14). The round-2 discipline — the store record is the
+   evidence, transcripts are commentary — has a concrete counterexample
+   behind it now.
+3. Agent-side memory contamination is a harness variable from here on.
+   Qwen Code's per-project memory carried round-2 learnings into both
+   later rounds (quoted rules that weren't in the task; a false
+   single-valued warning in 3c). Any future round that wants naive
+   agents needs fresh profiles or an explicit instruction to ignore
+   prior-session memory — otherwise the same leakage compounds.
+
+Store exports: `store-3b.edn` (14 entries, t 2–15), `store-3c.edn` and
+`store-3a.edn` (13 entries each, t 2–14) — `kala.backup/import-log` them
+into fresh storage to inspect the exact datoms without re-running
+anything.
 

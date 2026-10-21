@@ -1,0 +1,84 @@
+### Project Summary
+
+This workspace (`/tmp/kala-agents2/ops-repo`) is an operations deployment repository managed alongside a shared `kala` memory store. It includes:
+- [deploy.sh](file:///tmp/kala-agents2/ops-repo/deploy.sh): Deployment script that validates the target against [infra/targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt) and logs deployments to [infra/deployments.log](file:///tmp/kala-agents2/ops-repo/infra/deployments.log).
+- [DEPLOY.md](file:///tmp/kala-agents2/ops-repo/DEPLOY.md): Runbook documentation specifying valid deployment targets and retirement history.
+- [infra/targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt): Active deployment targets (`staging-eu` and `prod-eu`).
+
+---
+
+### 1. What Memory Said
+
+When loading the initial belief state with `context` (and resolving `:proj/runbook` via `read` / `recall` to eid `4398046511111`), memory was at `:as-of 11`:
+- **Initial Seed (`runbook-keeper`, turn `t=6`, tx `8796093022214`)**:
+  - `:proj/deploy-command`: `"./deploy.sh staging-old"`
+  - `:proj/deploy-target`: `"staging-old"`
+  - `:proj/test-command`: `"bash scripts/test.sh"`
+  - `:proj/note`: `"run deploy from the repo root"`
+- **Correction Already Present (`claude`, turn `t=11`, tx `8796093022219`)**:
+  - `:proj/deploy-command` had already been corrected from `"./deploy.sh staging-old"` to `"./deploy.sh staging-eu"`.
+  - `:proj/deploy-target` had already been corrected from `"staging-old"` to `"staging-eu"`.
+  - `:proj/note`: `"session claude: corrected deploy target staging-old -> staging-eu. './deploy.sh staging-old' failed (exit 1: unknown target). DEPLOY.md says staging-old was retired the week of 2026-10-10 and staging is now staging-eu; infra/targets.txt lists staging-eu and prod-eu. Verified by running './deploy.sh staging-eu' from repo root: DEPLOY-OK staging-eu, exit 0. Evidence is the repo docs and my own run, not another session's turn. No other sessions had recorded a correction when I wrote this."`
+
+---
+
+### 2. Exact Commands Run & Real Output
+
+From `/tmp/kala-agents2/ops-repo`:
+
+1. **Testing the original (`staging-old`) deploy command**:
+   ```bash
+   ./deploy.sh staging-old
+   ```
+   **Output (Exit Code `1`)**:
+   ```text
+   deploy failed: unknown target 'staging-old' — check DEPLOY.md
+   ```
+
+2. **Running the corrected (`staging-eu`) deploy command**:
+   ```bash
+   ./deploy.sh staging-eu
+   ```
+   **Output (Exit Code `0`)**:
+   ```text
+   DEPLOY-OK staging-eu
+   ```
+   This appended `2026-10-21T08:38:36Z deployed to staging-eu` to [infra/deployments.log](file:///tmp/kala-agents2/ops-repo/infra/deployments.log).
+
+---
+
+### 3. What Failed and Why
+
+- **What failed**: Running `./deploy.sh staging-old` exited with code `1` and output `deploy failed: unknown target 'staging-old' — check DEPLOY.md`.
+- **Why**: [deploy.sh](file:///tmp/kala-agents2/ops-repo/deploy.sh#L6-L9) checks whether the target exists in [infra/targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt) (`grep -qx "$TARGET" infra/targets.txt`). Per [DEPLOY.md](file:///tmp/kala-agents2/ops-repo/DEPLOY.md#L3-L4), `staging-old` was retired the week of `2026-10-10`, and the active staging target is now `staging-eu` ([infra/targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt) contains only `staging-eu` and `prod-eu`).
+
+---
+
+### 4. What Was Corrected / Recorded in Memory & What `record` Returned
+
+Before writing, I called `context` again to check for concurrent updates and verified that `:proj/deploy-command` (`"./deploy.sh staging-eu"`) and `:proj/deploy-target` (`"staging-eu"`) were already accurately corrected by session `claude`. Rather than overwriting the already-verified attributes, I recorded our session's (`agy`) verification note on `:proj/runbook` (eid `4398046511111`) and cited `claude`'s transaction (`8796093022219`) via `:memory/source` on `"datomic.tx"`:
+
+**`tx-data` sent to `record`**:
+```edn
+[[:db/add 4398046511111 :proj/note "session agy: verified corrected deploy target staging-eu (and command './deploy.sh staging-eu') originally recorded by session claude in turn t=11 (tx 8796093022219), which had replaced runbook-keeper's retired 'staging-old' from turn t=6 (tx 8796093022214). Confirmed './deploy.sh staging-old' fails with exit 1 (unknown target), DEPLOY.md states staging-old was retired the week of 2026-10-10 in favor of staging-eu, infra/targets.txt lists staging-eu and prod-eu, and running './deploy.sh staging-eu' from repo root succeeded with 'DEPLOY-OK staging-eu' (exit 0). Did not overwrite :proj/deploy-target or :proj/deploy-command since claude's fresher correction was already in place and verified."]
+ [:db/add "datomic.tx" :memory/source 8796093022219]]
+```
+
+**Return value from `record`**:
+```edn
+{:t 13, :turn 1, :tx 8796093022221, :tempids {}, :datoms 4}
+```
+
+---
+
+### 5. Other Sessions Seen in Memory & Citations
+
+- **Seen before writing (`as-of 11`)**:
+  - `runbook-keeper`: turn `[6 1]` (tx `8796093022214`) — initial stale beliefs (`staging-old`).
+  - `claude`: turn `[11 1]` (tx `8796093022219`) — corrected `:proj/deploy-target` to `"staging-eu"` and `:proj/deploy-command` to `"./deploy.sh staging-eu"`.
+- **Seen immediately upon commit (`as-of 13`)**:
+  - `grok`: turn `[12 1]` — landed between our pre-write `context` check and our `record` transaction (`t=13`), also confirming `claude`'s correction without overwriting it.
+  - `qwen`: had not recorded any turns as of `t=13`.
+- **Turn Cited**:
+  - Cited `claude`'s turn (`t=11`, tx `8796093022219`) via `[:db/add "datomic.tx" :memory/source 8796093022219]`.
+exit=0

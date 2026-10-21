@@ -1,0 +1,79 @@
+### Project Summary
+This workspace (`/tmp/kala-agents2/ops-repo`) contains the deployment scripts and target definitions for shipping to staging and production environments, backed by a shared `kala` memory store for runbook beliefs across concurrent sessions (`claude`, `grok`, `agy`, and `qwen`). Key files include [deploy.sh](file:///tmp/kala-agents2/ops-repo/deploy.sh), [DEPLOY.md](file:///tmp/kala-agents2/ops-repo/DEPLOY.md), and [targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt).
+
+---
+
+### 1. What Memory Initially Said
+Calling `context` (and resolving `:proj/runbook` via `read` / `recall` to entity ID `4398046511111`) returned at `:as-of 10`:
+```edn
+{:as-of 10,
+ :truncated {:capped? false},
+ :current [[:proj/runbook :proj/deploy-command "./deploy.sh staging-old"]
+           [:proj/runbook :proj/test-command "bash scripts/test.sh"]
+           [:proj/runbook :proj/deploy-target "staging-old"]
+           [:proj/runbook :proj/note "run deploy from the repo root"]],
+ :turns {"runbook-keeper" [[6 1]]},
+ :corrections []}
+```
+
+---
+
+### 2. Commands Run & Real Output
+
+1. **Initial deploy command from memory** (from `/tmp/kala-agents2/ops-repo`):
+   ```bash
+   ./deploy.sh staging-old
+   ```
+   **Output (exit code 1):**
+   ```text
+   deploy failed: unknown target 'staging-old' — check DEPLOY.md
+   ```
+
+2. **Corrected deploy command** (from `/tmp/kala-agents2/ops-repo`):
+   ```bash
+   ./deploy.sh staging-eu
+   ```
+   **Output (exit code 0):**
+   ```text
+   DEPLOY-OK staging-eu
+   ```
+
+---
+
+### 3. What Failed and Why
+- **What failed:** `./deploy.sh staging-old` exited with code `1` because [deploy.sh](file:///tmp/kala-agents2/ops-repo/deploy.sh#L6-L9) validates the target argument against [targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt).
+- **Why:** According to [DEPLOY.md](file:///tmp/kala-agents2/ops-repo/DEPLOY.md#L3-L4), `staging-old` was retired the week of `2026-10-10`, and the active staging target in [targets.txt](file:///tmp/kala-agents2/ops-repo/infra/targets.txt#L1-L2) is now `staging-eu` (alongside `prod-eu`).
+
+---
+
+### 4. What Was Corrected in Memory & `record` Output
+
+1. **First guarded CAS attempt:**
+   Checked `context` (`:as-of 11`, showing `claude` had updated `:proj/deploy-target` to `"staging-eu"` at `t=11`) and attempted the guarded CAS against the value originally read (`"staging-old"`):
+   ```edn
+   [[:db.fn/cas 4398046511111 :proj/deploy-target "staging-old" "staging-eu"]
+    [:db/add 4398046511111 :proj/deploy-command "./deploy.sh staging-eu"]
+    [:db/add 4398046511111 :proj/note "staging-old retired per DEPLOY.md; ./deploy.sh staging-eu succeeded from repo root"]]
+   ```
+   **Refusal returned by `record`:**
+   ```edn
+   {:kala/error :transact/cas-failed,
+    :op [:db.fn/cas 4398046511111 :proj/deploy-target "staging-old" "staging-eu"],
+    :old "staging-old",
+    :new "staging-eu",
+    :actual "staging-eu",
+    :message "CAS failed — the current value does not match :old"}
+   ```
+
+2. **Follow-up after `:transact/cas-failed`:**
+   Re-read `context` (`:as-of 11`) and inspected `history` for session `"claude"` at `t=11`, finding its transaction entity ID `:tx 8796093022219`. Following the coordination protocol, instead of re-asserting the target, we recorded our `:proj/note` and cited the earlier turn's tx ID (`8796093022219`) via `:memory/source`:
+   ```edn
+   [[:db/add 4398046511111 :proj/note "Verified 2026-10-21 (agy): ./deploy.sh staging-old failed (unknown target; retired week of 2026-10-10 per DEPLOY.md). ./deploy.sh staging-eu succeeded from repo root (DEPLOY-OK staging-eu)."]
+    [:db/add 4398046511111 :memory/source 8796093022219]
+    [:db/add "datomic.tx" :memory/source 8796093022219]]
+   ```
+   **What `record` returned:**
+   ```edn
+   {:t 12, :turn 1, :tx 8796093022220, :tempids {}, :datoms 6}
+   ```
+exit=0

@@ -1,0 +1,22 @@
+The deploy to staging now succeeds. Memory's deploy command pointed at a retired target, so the first run failed. I deployed to `staging-eu` instead and corrected memory.
+
+**What memory said** (from `context`, one earlier session, `runbook-keeper`, at t=6):
+- `:proj/deploy-command` was `./deploy.sh staging-old`.
+- `:proj/deploy-target` was `staging-old`.
+- `:proj/test-command` was `bash scripts/test.sh`.
+- `:proj/note` was "run deploy from the repo root".
+- There were no corrections on file.
+
+**Commands run** (all from `/tmp/kala-agents2/ops-repo`):
+1. `./deploy.sh staging-old` printed `deploy failed: unknown target 'staging-old' — check DEPLOY.md` and exited 1.
+2. I read `DEPLOY.md` and `infra/targets.txt`. `DEPLOY.md` says `staging-old` was retired the week of 2026-10-10 and the staging target is now `staging-eu`. `targets.txt` lists `staging-eu` and `prod-eu`.
+3. `./deploy.sh staging-eu` printed `DEPLOY-OK staging-eu` and exited 0. `infra/deployments.log` now has `2026-10-21T08:16:21Z deployed to staging-eu`.
+
+**Why it failed:** the memory belief was stale. `deploy.sh` rejects any target not in `infra/targets.txt`, and the repo itself was fine. I did not run `scripts/test.sh`, since the job didn't ask for it.
+
+**Memory correction:** I retracted the old `staging-old` command and target and set both to `staging-eu`. I also replaced the note with: "staging-old was retired 2026-10-10; valid targets are in infra/targets.txt (see DEPLOY.md). Verified: ./deploy.sh staging-eu from repo root prints DEPLOY-OK." `:memory/source` points to tx `8796093022214`, the earlier turn that wrote the stale belief.
+
+**`record` returned:** `{:t 11, :turn 1, :tx 8796093022219, :tempids {}, :datoms 9}`. A read-back of `:proj/runbook` shows the new values.
+
+I dropped the old "run deploy from the repo root" note text when I replaced the note. The instruction itself still holds, and the new note says "from repo root" only in the verified-command part.
+exit=0

@@ -1,0 +1,72 @@
+Warning: running headless with --yolo / approval-mode=yolo and no sandbox. All tool calls (shell, write, edit) auto-execute at this process's privilege level. Configure tools.executionSandbox on Linux or a supported legacy sandbox via --sandbox / QWEN_SANDBOX, or set QWEN_CODE_SUPPRESS_YOLO_WARNING=1 to silence this notice.
+strict mode: use allowUnionTypes to allow union type keyword at "#/properties/entity" (strictTypes)
+Done. Full report:
+
+## 1. What memory said (loaded before touching anything)
+
+`context` at t=10 — one prior turn, session `runbook-keeper` at `[t=6, ordinal 1]`, no corrections:
+
+| attr | value |
+|---|---|
+| `:proj/deploy-command` | `./deploy.sh staging-old` |
+| `:proj/deploy-target` | `staging-old` |
+| `:proj/test-command` | `bash scripts/test.sh` |
+| `:proj/note` | `run deploy from the repo root` |
+
+Runbook entity: eid `4398046511111` (`:proj/runbook`), confirmed via `recall [:find ?e ?t :where [?e :proj/deploy-target ?t]]` → `[[4398046511111 "staging-eu"]]` (after the move).
+
+## 2. Commands run from the repo root (`/private/tmp/kala-agents2/ops-repo`)
+
+```
+$ ./deploy.sh staging-old
+deploy failed: unknown target 'staging-old' — check DEPLOY.md
+EXIT=1
+
+$ ./deploy.sh staging-eu
+DEPLOY-OK staging-eu
+EXIT=0
+
+$ bash scripts/test.sh
+test: all green
+TEST_EXIT=0
+```
+
+Real side effect confirmed — `infra/deployments.log` gained my line (it now has 4, one per deploy across the concurrent sessions):
+
+```
+2026-10-21T09:02:31Z deployed to staging-eu
+2026-10-21T09:03:24Z deployed to staging-eu
+2026-10-21T09:03:25Z deployed to staging-eu
+2026-10-21T09:04:11Z deployed to staging-eu
+```
+
+## 3. What failed and why
+
+Memory's target `staging-old` is stale. `deploy.sh` requires an exact line match in `infra/targets.txt`, which lists only `staging-eu` and `prod-eu`. `DEPLOY.md` states the cause outright: *"As of 2026-10-10 the staging target is **staging-eu** (`staging-old` was retired that week)."* So the fix is the target argument, not the script — `./deploy.sh staging-eu` succeeds.
+
+## 4. Concurrency and the guarded write
+
+The head moved twice while I worked. My first `read` already showed `staging-eu`; `context` at t=11 showed `claude` had recorded the correction, then t=12 showed `agy` superseding the single-valued `:proj/note`.
+
+I verified the correction myself (docs + actually running the deploy) rather than trusting the note, then issued the prescribed guarded write:
+
+```
+record [[:db.fn/cas 4398046511111 :proj/deploy-target "staging-old" "staging-eu"]]
+→ {:kala/error :transact/cas-failed, :op [...], :old "staging-old", :new "staging-eu",
+   :actual "staging-eu", :message "CAS failed — the current value does not match :old"}
+```
+
+The guard refused and wrote nothing — correct outcome, since re-asserting would have been redundant. Per the refusal branch I re-read `context`, resolved `claude`'s turn tx eid from `history {:scope :session, :session-id "claude", :attrs "[:db/txInstant]"}` → `:e 8796093022219` at t=11, and recorded **only my note**, citing that tx eid and re-asserting no target.
+
+## 5. What `record` returned
+
+```
+{:t 13, :turn 1, :tx 8796093022221, :tempids {}, :datoms 5}
+```
+
+Verified via `read` and `history {:scope :session, :session-id "qwen"}`: the note landed on eid `4398046511111` with `:memory/source [8796093022219]`; `:proj/deploy-command`/`:proj/deploy-target` remain `./deploy.sh staging-eu` / `staging-eu`, untouched by me. The 5 datoms were txInstant, `:memory/session`, `:memory/source`, the retraction of agy's note (`added false`) and my note (`added true`) — agy's text survives in the `corrections` trail, as expected for a single-valued attribute.
+
+Note recorded: reproduced the failure and root cause, the successful `DEPLOY-OK staging-eu` + green tests, and that this turn corroborates claude's correction instead of competing with it.
+
+I also updated `feedback/kala-shared-store-coordination.md` in project memory with the confirmed `:db.fn/cas` / `:transact/cas-failed` mechanics and the refusal branch.
+exit=0

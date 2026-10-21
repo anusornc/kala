@@ -1,0 +1,36 @@
+The deploy to staging succeeded, but only after I changed the target from `staging-old` to `staging-eu`. I've recorded that correction in memory.
+
+**What memory said**
+- Everything came from one turn by session `runbook-keeper`, at t=6.
+- `:proj/deploy-command` was `./deploy.sh staging-old`, and `:proj/deploy-target` was `staging-old`.
+- `:proj/test-command` was `bash scripts/test.sh`, and `:proj/note` said to run the deploy from the repo root.
+- There were no corrections on file.
+
+**Commands and output** (run from `/tmp/kala-agents2/ops-repo`)
+1. `./deploy.sh staging-old` printed `deploy failed: unknown target 'staging-old' — check DEPLOY.md` and exited 1.
+2. I read `DEPLOY.md`, `deploy.sh` and `infra/targets.txt`:
+   - `DEPLOY.md` says staging is `staging-eu` as of 2026-10-10, and `staging-old` was retired that week.
+   - `infra/targets.txt` lists `staging-eu` and `prod-eu`.
+   - `deploy.sh` rejects any target not listed in `targets.txt`.
+3. `./deploy.sh staging-eu` printed `DEPLOY-OK staging-eu` and exited 0.
+4. `infra/deployments.log` now has one line: `2026-10-21T08:36:28Z deployed to staging-eu`.
+
+**Why it failed**
+The remembered target had been retired. No file needed fixing; the stale memory was the cause.
+
+**What I corrected in memory**
+- On `:proj/runbook` (eid 4398046511111) I set `:proj/deploy-target` to `staging-eu` and `:proj/deploy-command` to `./deploy.sh staging-eu`.
+- I added my own `:proj/note`. It says what failed, what `DEPLOY.md` and `targets.txt` show, and that I verified the fix by running the deploy.
+- I didn't write the test-command belief, and I didn't run `scripts/test.sh`.
+
+**What record returned**
+`{:t 11, :turn 1, :tx 8796093022219, :tempids {}, :datoms 7}`
+
+I never read back the retraction of the old values, so I haven't confirmed they were replaced.
+
+**Other sessions**
+- The only session I saw was `runbook-keeper` (turn t=6). It wrote the stale belief, so I did not cite it.
+- I saw no turns from `grok`, `agy` or `qwen`. I called `context` before the deploy and again before recording, and the belief state was unchanged both times.
+- I left `:memory/source` off, because my evidence was the repo docs and my own deploy run, not any session's turn.
+- Nobody else had corrected `:proj/deploy-target`, so there was no conflict to flag in the note.
+exit=0
