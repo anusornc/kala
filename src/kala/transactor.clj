@@ -13,9 +13,10 @@
 
 ;; server state: the single-writer connection atom, the set of notification
 ;; listener output streams, a registry of speculative db values (from
-;; :with) addressable by id, since they have no log presence, and the
-;; optional :connect token — nil means the wire requires no auth
-(defrecord TransactorState [conn listeners speculative token])
+;; :with) addressable by id, since they have no log presence, the
+;; optional :connect token — nil means the wire requires no auth — and
+;; whether the wire may trigger compaction (:compact true, ADR-0010)
+(defrecord TransactorState [conn listeners speculative token compact?])
 
 (def ^:private max-speculative 100)
 
@@ -89,6 +90,19 @@
        (ok {:t (:t report)
             :tx-data (public-datoms (:tx-data report))
             :tempids (:tempids report)})))
+
+   :compact
+   (fn [{:keys [conn compact?]} _msg]
+     ;; ADR-0010: pruning history over the wire is the operator's opt-in;
+     ;; the table flags :is-write?, so this runs under the single-writer
+     ;; lock and the report's :t is exact. Not a transaction — listeners
+     ;; get no notification.
+     (if compact?
+       (let [{:keys [t datoms pruned]} (api/compact conn)]
+         (ok {:t t :datoms datoms :pruned pruned}))
+       (fail :compact/disabled
+             "Client compaction is not enabled on this transactor (start it with :compact true)"
+             {})))
 
    :with
    (fn [state msg]
@@ -201,18 +215,30 @@
   "Start a transactor. Opts: :port (0 picks an ephemeral port), :host,
   :storage (:memory or :file), :path (for file storage), :token (a shared
   secret every :connect must carry — nil, the default, requires no auth;
-  a token that is present must be a non-empty string). Returns a map with
+  a token that is present must be a non-empty string), :compact (true to
+  let clients trigger compaction over the wire — the default refuses
+  :compact with :compact/disabled; peer-mode api/compact on the
+  transactor's own connection is unaffected, ADR-0010). Returns a map with
   :port, :stop!, :acceptor, :conn. The transactor owns one connection;
   concurrent client writes serialize through it."
-  [{:keys [host port storage path token] :or {port 0 storage :memory}}]
+  [{:keys [host port storage path token compact] :or {port 0 storage :memory compact false}}]
   (when (some? token)
     (when-not (and (string? token) (pos? (.length ^String token)))
       (core/err :connect/bad-token
                 "The transactor :token must be a non-empty string" {})))
+  (when-not (boolean? compact)
+    (core/err :connect/bad-option
+              "The transactor :compact option must be true or false"
+              {:option :compact}))
+  ;; a truthy non-boolean would silently invert operator intent on the one
+  ;; irreversible op, so it is refused above; this one only advises
+  (when (and compact (not token))
+    (println :WARN ":compact true without a :token — any client that reaches "
+             "the wire may prune history (ADR-0010)"))
   (let [conn (api/connect (if (= :file storage)
                             {:storage :file :path path}
                             {:storage storage}))
-        state (->TransactorState conn (atom #{}) (atom []) token)
+        state (->TransactorState conn (atom #{}) (atom []) token (boolean compact))
         lock (java.util.concurrent.locks.ReentrantLock.)
         server (ServerSocket. port 50 (InetAddress/getByName (or host "127.0.0.1")))
         executor (Executors/newCachedThreadPool
@@ -239,8 +265,9 @@
 
 (defn parse-config
   "The transactor config file: EDN map with :host, :port, :storage, :path,
-  and optionally :token (a shared secret every client must carry; generate
-  one with e.g. `openssl rand -hex 32`)."
+  :token (a shared secret every client must carry; generate one with e.g.
+  `openssl rand -hex 32`), and :compact (true to let clients compact the
+  store over the wire)."
   [s]
   (edn/read-string s))
 

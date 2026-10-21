@@ -205,6 +205,12 @@
    [:query/bad-rules (fn [conn] (api/q '[:find ?x :in $ % :where (r ?x)] (api/db conn) 5))]
    [:pull/bad-pattern #(api/pull (api/db %) 5 1)]])
 
+;; Kinds only a transactor reply can carry, triggered from a client: the
+;; peer side has no flag or credential to trip, so there is no peer-side
+;; key set to compare (:compact/disabled, ADR-0010).
+(def client-triggers
+  [[:compact/disabled #(api/compact %)]])
+
 (def pinned-kinds
   "Kinds that never ride a transactor reply, pinned with the reason."
   {:query/no-db "the transactor's :q handler always binds $ — the kind is only reachable in-process on peer reads"
@@ -215,6 +221,7 @@
    :storage/non-monotonic-t "peer mode triggers it through the public path below (a lying adapter); client mode cannot carry an adapter — the transactor config is EDN keywords"
    :storage/rename-failed "needs filesystem fault injection between temp write and rename; keys enumerated for the reply path"
    :connect/bad-token "transactor-side startup validation (start! refuses a non-string or empty :token before binding); never rides a reply"
+   :connect/bad-option "transactor-side startup validation (start! refuses a non-boolean :compact before binding); never rides a reply"
    :memory/bad-tx-data "raised at the MCP edge (kala.mcp's tx-data-arg!) and in-process by memory/record — it never crosses a transactor reply"})
 
 (def raw-frame-kinds
@@ -241,6 +248,7 @@
         (is (= (set (keys wire/error-data-keys))
                (set (concat (map first exact-triggers)
                             (map first union-triggers)
+                            (map first client-triggers)
                             (keys raw-frame-kinds)
                             (keys pinned-kinds))))))
       (testing "single-site kinds ship exactly their whitelisted keys in both modes"
@@ -259,6 +267,11 @@
                 (str kind " peer keys are within the whitelist"))
             (is (= peer-keys client-keys)
                 (str kind " client mode receives what peer mode carries")))))
+      (testing "client-only kinds ship exactly their whitelisted keys"
+        (doseq [[kind trigger] client-triggers]
+          (let [client-keys (err-keys #(trigger cconn))]
+            (is (= (sort (wire/error-data-keys-for kind)) client-keys)
+                (str kind " carries exactly its whitelisted keys client-side")))))
       (finally
         ((:stop! t))
         (when-some [p (:socket pconn)] (client/close p))))))
@@ -553,5 +566,13 @@
                     (catch clojure.lang.ExceptionInfo e e))]
         (is (some? ex) (str "token " (pr-str bad)))
         (is (= :connect/bad-token (:kala/error (ex-data ex))))
-        (is (= [] (sort (disj (into #{} (keys (ex-data ex))) :kala/error))))))))
+        (is (= [] (sort (disj (into #{} (keys (ex-data ex))) :kala/error)))))))
+  (testing "start! refuses a :compact that is not a boolean (ADR-0010)"
+    ;; a truthy string like "false" would silently invert operator intent
+    (doseq [bad ["false" 1]]
+      (let [ex (try (tx/start! {:storage :memory :port 0 :compact bad}) nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex) (str "compact " (pr-str bad)))
+        (is (= :connect/bad-option (:kala/error (ex-data ex))))
+        (is (= [:option] (sort (disj (into #{} (keys (ex-data ex))) :kala/error))))))))
 

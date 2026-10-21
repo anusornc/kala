@@ -173,10 +173,15 @@
   (core/db-storage db))
 
 (defn compact
-  "Checkpoint-and-prune compaction (peer mode only): write a checkpoint of
-  the live state into a storage segment, then prune the log entries it
-  covers, so boot replays live state + tail instead of the whole log.
-  Returns {:t the-base :datoms checkpointted :pruned pruned}.
+  "Checkpoint-and-prune compaction: write a checkpoint of the live state
+  into a storage segment, then prune the log entries it covers, so boot
+  replays live state + tail instead of the whole log. Returns {:t
+  the-base :datoms checkpointted :pruned pruned}.
+
+  Peer mode runs it in-process. Client mode asks the transactor to
+  compact its own store over the wire; it is refused with
+  :compact/disabled unless the transactor was started with :compact true
+  (ADR-0010).
 
   The cost is history below the base: as-of reads there raise
   :db/pruned-t and history shows only surviving datoms (ADR-0008).
@@ -184,8 +189,6 @@
   run while transacts land (they go above the base) and idempotent;
   re-running after an interruption finishes the job."
   [conn]
-  (when (client-conn? conn)
-    (core/err :client/peer-only
-              "Compaction is peer-only; in client mode the transactor owns the storage"
-              {:op :compact}))
-  (compaction/compact! conn))
+  (if (client-conn? conn)
+    (client/compact conn)
+    (compaction/compact! conn)))

@@ -280,13 +280,65 @@
       (finally
         ((:stop! t))))))
 
-(deftest compaction-is-peer-only
+(deftest a-transactor-refuses-client-compaction-by-default
+  ;; ADR-0010: pruning history over the wire is the operator's opt-in —
+  ;; the default transactor refuses with the structured kind, and the
+  ;; refusal is a per-op failure: the connection lives on.
   (let [t (tx/start! {:storage :memory :port 0})]
     (try
       (let [conn (client/connect {:host "127.0.0.1" :port (:port t)})]
-        (is (= :client/peer-only
-               (:kala/error (try (api/compact conn) nil
-                                 (catch Exception e (ex-data e))))))
-        (client/close conn))
+        (api/transact conn schema)
+        (api/transact conn [[:db/add "a" :x/name "alice"]])
+        (testing "the refusal is the structured kind"
+          (is (= :compact/disabled
+                 (:kala/error (try (api/compact conn) nil
+                                   (catch Exception e (ex-data e)))))))
+        (testing "the connection lives on after the refusal"
+          (api/transact conn [[:db/add "b" :x/name "bob"]])
+          (is (= #{"alice" "bob"}
+                 (set (map first (api/q names-q (api/db conn))))))))
+      (finally
+        ((:stop! t))))))
+
+(deftest client-mode-compaction-checkpoints-and-prunes-the-transactors-store
+  ;; ADR-0010: with :compact true, any client bounds boot replay — the
+  ;; peer's own {:t :datoms :pruned} report, the same loud pruned-history
+  ;; rules, and a reopen that replays checkpoint + tail.
+  (let [dir (tmp-dir)
+        t (tx/start! {:storage :file :path dir :port 0 :compact true})
+        conn (client/connect {:host "127.0.0.1" :port (:port t)})
+        _ (api/transact conn schema)
+        _ (api/transact conn [[:db/add "a" :x/name "alice"]
+                              [:db/add "a" :x/age 30]])
+        alice (ffirst (api/q '[:find ?e :in $ ?n :where [?e :x/name ?n]]
+                              (api/db conn) "alice"))
+        ;; a correction worth pruning: the trail is the point
+        correction (api/transact conn [[:db/retract alice :x/age 30]
+                                       [:db/add alice :x/age 31]])
+        pre-t (:t correction)
+        report (api/compact conn)]
+    (try
+      (testing "the reply is the peer's report"
+        (is (= pre-t (:t report)))
+        (is (pos? (:datoms report)))
+        (is (pos? (:pruned report))))
+      (testing "as-of below the base raises the pruned kind through the wire"
+        (let [e (try (api/q '[:find ?v :where [_ :x/age ?v]]
+                            (api/as-of (api/db conn) (dec pre-t)))
+                     nil
+                     (catch Exception e e))]
+          (is (= :db/pruned-t (:kala/error (ex-data e))))
+          ;; the wire whitelist keeps the requested t; :base stays in-process
+          (is (= (dec pre-t) (:t (ex-data e))))))
+      (testing "the store keeps taking writes above the base"
+        (api/transact conn [[:db/add "d" :x/name "dave"]])
+        (is (= #{"alice" "dave"}
+               (set (map first (api/q names-q (api/db conn)))))))
+      ;; the transactor releases the store before the reopen reads it
+      ((:stop! t))
+      (testing "the reopen replays checkpoint + tail"
+        (let [reopened (api/connect {:storage :file :path dir})]
+          (is (= #{"alice" "dave"}
+                 (set (map first (api/q names-q (api/db reopened))))))))
       (finally
         ((:stop! t))))))

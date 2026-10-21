@@ -73,11 +73,10 @@
       ;; the loop locks what the table flags — kala.wire/ops owns the
       ;; single-writer invariant
       (is (boolean? (:is-write? spec)) (str op " is-write?"))))
-  (testing ":transact is the one write op"
-    (is (= [:transact]
-           (vec (for [[op spec] wire/ops
-                      :when (:is-write? spec)]
-                  op)))))
+  (testing "the write ops serialize through the lock: transact and compact (ADR-0010)"
+    (is (= #{:transact :compact}
+           (into #{} (keep (fn [[op spec]] (when (:is-write? spec) op)))
+                 wire/ops))))
   (testing "db-reference ops are exactly the reads that address a named db value"
     (is (= #{:with :q :pull :datoms}
            (into #{} (keep (fn [[op spec]] (when (:db-reference? spec) op)))

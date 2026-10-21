@@ -46,6 +46,7 @@ connection.
 | `:connect` | `:protocol-version`, `:token` (when the transactor requires one) | `:protocol-version`, `:t` |
 | `:db` | — | `:t` (the transactor's current t) |
 | `:transact` | `:tx-data` (list-form ops and/or map-form entities) | `:t`, `:tx-data` (public datom maps), `:tempids` (incl. `:db/current-tx`) |
+| `:compact` | — | `:t`, `:datoms`, `:pruned` |
 | `:with` | `:tx-data`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:t`, `:db-ref`, `:tx-data`, `:tempids` |
 | `:q` | `:query` (data form or EDN string), `:args` (the remaining `:in` inputs after `$`, in order), optional `:t` / `:since-t` / `:history` / `:db-ref` | `:rows` |
 | `:pull` | `:pattern`, `:eid`, optional `:t` / `:since-t` / `:history` / `:db-ref` | `:doc` |
@@ -56,6 +57,13 @@ connection.
 `:since-t` view, `history` when requested, the `:db-ref` speculative value
 when supplied, and the current db otherwise. Further `:q` `:args` bind the
 remaining `:in` symbols.
+
+`:compact` asks the transactor to checkpoint-and-prune its own store — the
+same report peer-mode compaction returns. It is refused with
+`:compact/disabled` unless the transactor was started with `:compact true`;
+the flag gates the wire only (ADR-0008, ADR-0010). The op runs under the
+write lock, so the reply's `:t` is exact; it consumes no t, and `:listen`
+subscribers get no notification.
 
 ## Speculative transactions
 
@@ -90,8 +98,8 @@ commit order. Broken listener sockets are dropped silently.
 
 The transactor is the database's single writer: concurrent write requests
 serialize through one lock into a single total order of `t`. Which ops are
-write ops is declared in the protocol's op table (currently only
-`:transact`); the lock keys off that declaration, not per-op code.
+write ops is declared in the protocol's op table (currently `:transact` and
+`:compact`); the lock keys off that declaration, not per-op code.
 
 ## Durability
 

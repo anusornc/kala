@@ -22,8 +22,12 @@ addressable `:as-of t`, and history never loses a correction's trail.
 1. **Compaction is an explicit, opt-in call — `kala.api/compact`, peer mode
    only.** Never a background process, never a size trigger. Pruning history
    is a semantic choice an operator makes, not an automatic consequence of
-   running long enough. (Client-mode/transactor compaction would need a wire
-   op; deferred until the networked shape has a story for it.)
+   running long enough. ~~(Client-mode/transactor compaction would need a wire
+   op; deferred until the networked shape has a story for it.)~~
+   **Revised 2026-10-21:** the "peer mode only" half is superseded — client
+   mode compacts through the `:compact` wire op, served by the transactor
+   behind a `:compact true` opt-in — see
+   [ADR-0010](0010-client-mode-compaction-rides-the-wire-behind-a-transactor-opt-in.md).
 
 2. **The checkpoint lives in the segment half** under one fixed id
    (`storage/checkpoint-segment-id`), overwritten per compaction — checkpoints

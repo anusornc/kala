@@ -160,7 +160,7 @@ echo '{:port 4334 :storage :file :path "/var/data/mydb"}' > transactor.propertie
 clojure -M:transactor transactor.properties.edn
 ```
 
-Then connect remotely with `kala.client/connect` — see [docs/wire-protocol.md](docs/wire-protocol.md) for the protocol.
+Then connect remotely with `kala.client/connect` — see [docs/wire-protocol.md](docs/wire-protocol.md) for the protocol. Adding `:compact true` to the config lets clients trigger compaction over the wire; the default refuses (`:compact/disabled`, [ADR-0010](docs/adr/0010-client-mode-compaction-rides-the-wire-behind-a-transactor-opt-in.md)).
 
 ## Release
 
@@ -203,6 +203,10 @@ What that deliberately does not include:
   checkpoint-and-prune compaction (`api/compact`) bounds boot replay to the
   live state plus the tail, at the cost of history below the compaction
   base ([ADR-0008](docs/adr/0008-compaction-is-explicit-checkpoint-and-prune.md)).
+  In client mode the transactor serves the same call over the wire — but
+  only when started with `:compact true`, the operator's opt-in, since
+  pruning history is the one client-reachable effect that cannot be undone
+  ([ADR-0010](docs/adr/0010-client-mode-compaction-rides-the-wire-behind-a-transactor-opt-in.md)).
 - **Single writer, single node** — one transactor serializes all writes;
   no replication or HA.
 - **Transport security is opt-in and minimal** — starting the transactor

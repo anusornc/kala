@@ -188,7 +188,10 @@
 
 (deftest parse-config-reads-edn
   (is (= {:port 4334 :storage :file :path "/var/db"}
-         (tx/parse-config "{:port 4334 :storage :file :path \"/var/db\"}"))))
+         (tx/parse-config "{:port 4334 :storage :file :path \"/var/db\"}")))
+  ;; the config leg of the :compact opt-in (ADR-0010): the key survives
+  ;; parsing into the map start! consumes
+  (is (= true (:compact (tx/parse-config "{:port 4334 :storage :file :compact true}")))))
 
 (deftest op-handlers-cover-the-wire-table
   ;; every op the protocol table declares has a transactor-side handler, and

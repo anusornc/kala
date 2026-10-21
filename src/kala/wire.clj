@@ -32,6 +32,9 @@
    :transact {:request [:tx-data]
               :reply [:t :tx-data :tempids]
               :is-write? true}
+   :compact {:request []
+             :reply [:t :datoms :pruned]
+             :is-write? true}
    :with {:request [:tx-data]
           :reply [:t :db-ref :tx-data :tempids]
           :is-write? false
@@ -80,11 +83,13 @@
    :protocol/bad-frame []
    :protocol/unauthorized []
    :connect/bad-token []
+   :connect/bad-option [:option]
    :transactor/unknown-op [:op]
    :connect/missing-path []
    :connect/unknown-storage [:storage]
    :client/peer-only [:op]
    :client/error []
+   :compact/disabled []
    :db/bad-t [:t :e]
    :db/view-not-writable [:view]
    :storage/non-monotonic-t [:t :last-t]

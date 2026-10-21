@@ -119,6 +119,15 @@
      :tx-data tx-data
      :tempids tempids}))
 
+(defn compact
+  "Ask the transactor to checkpoint-and-prune its own store (ADR-0008,
+  ADR-0010). The reply carries the peer's {:t :datoms :pruned} report;
+  the transactor refuses with :compact/disabled unless it was started
+  with :compact true."
+  [^ClientConn c]
+  (let [{:keys [t datoms pruned]} (check (request c {:op :compact}))]
+    {:t t :datoms datoms :pruned pruned}))
+
 (defn q
   "Run a Datalog query server-side against the remote db; extra :in inputs
   (beyond $) travel in :args."
