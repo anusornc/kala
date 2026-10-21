@@ -123,3 +123,57 @@ not force it — a fully simultaneous start would test the CAS story (spec
 story 7) rather than the citation story, and has not been run. Agents were
 told the coordination rules; a run with `task.txt` alone would show how
 much of the relay is kala's affordance versus the instruction.
+
+## Round 3 design (2026-10-21, not yet run)
+
+Three variants, each isolating one variable round 2 left confounded. Every
+variant reuses the round-2 recipe unchanged apart from its delta — fresh
+store + `seed.clj`, one transactor on 4334, four client-mode MCP configs,
+`probe.sh` expecting four `10`s before any agent launches. Each is
+independently runnable; the run order is the operator's call. Task texts
+and run scripts are authored into a dated `multi-agent-trial-<date>/`
+folder when the round is greenlit — quoted here so the design is
+reviewable first.
+
+**3a — simultaneous starts: the CAS story (spec story 7).** `run-round3a.sh`
+drops the 45 s sleeps; the four agents launch back to back, so none can
+rely on finding an earlier turn. `task-cas.txt` keeps the round-2 job but
+rewrites the coordination paragraph: the corrected belief is written as
+`[:db.fn/cas <runbook> :proj/deploy-target <what-you-read> staging-eu]` —
+the guarded variant `record`'s docstring names for exactly this case — and
+a `:transact/cas-failed` refusal means re-read, then either record only the
+note citing the refuser's turn (when the store now holds the value you
+verified) or retry the cas once with the store's current old value. Success
+signal: at most one successful target change in the store, and the
+cas-failed refusals in the transcripts are the finding, not noise — they
+are the store enforcing "never overwrite a fresher correction" that round 2
+achieved by instruction alone. Expect a near-empty citation graph (nobody
+could go second on purpose); `deployments.log` should still carry four real
+deploys. Analysis note: CAS refusals never write, so they appear only in
+`transcripts/`, never in the store — grep there.
+
+**3b — `task.txt` verbatim: affordance versus instruction.** The staggered
+runner unchanged; the task is round 1's `task.txt` with no coordination
+paragraph, no mention of the other sessions, no cite instruction. The
+measure is what emerges unprompted: does anyone re-read `context` before
+writing, does any `:memory/source` edge appear, do later agents adopt the
+earlier correction or re-derive it (four deploys), does anyone clobber
+`:proj/note`? Round 2 is the baseline row. Pre-registered prediction, so
+the analysis cannot drift: corrections should still converge — the trail is
+visible whether or not anyone is told to look — but the citation graph
+should be sparse or empty, and if the clobbering happens anyway, finding 2
+sharpens into "the affordance shows the trail; only the instruction
+prevented the clobber."
+
+**3c — per-session account vocabulary: finding 2 fixed at the schema.**
+The seed registers `:proj/note` as cardinality-many (the seed's vocabulary
+loop splits it out of the `/one` list), and the task keeps the round-2
+coordination paragraph plus one sentence: your account goes in `:proj/note`
+and every session's note is kept. Success signal: after all four record,
+`context`'s `:current` shows four notes — one voice per session — instead
+of only the last one, with no history excavation. This is the
+developer-owned vocabulary decision finding 2 pointed at, exercised for
+real; if cardinality-many is still not enough for multi-agent accounts,
+the residual is a `kala.memory` design question (per-session shaping of the
+context document), not a task-authoring one.
+
