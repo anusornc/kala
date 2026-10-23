@@ -182,6 +182,28 @@
                             (q-one conn '[:find ?x :in $ % :where [?p :person/age 30] (missing ?x)]
                                    '[[(other ?x) [_ :person/age ?x]]]))))))
 
+(deftest lexical-builtins-recall
+  ;; includes?/starts-with?/ends-with?: the lexical-recall slice of the
+  ;; data-only allowlist — regex stays out (agent-written patterns would
+  ;; be a ReDoS surface on the transactor)
+  (let [conn (load-fixture!)]
+    (testing "includes? matches a fragment"
+      (is (= #{"Alice"}
+             (set (map first (q-one conn '[:find ?n :where [?p :person/name ?n]
+                                                      [(includes? ?n "li")]]))))))
+    (testing "starts-with? and ends-with? anchor the two ends"
+      (is (= #{"Bob"}
+             (set (map first (q-one conn '[:find ?n :where [?p :person/name ?n]
+                                                      [(starts-with? ?n "B")]])))))
+      (is (= #{"Alice"}
+             (set (map first (q-one conn '[:find ?n :where [?p :person/name ?n]
+                                                      [(ends-with? ?n "ce")]]))))))
+    (testing "composed with lower-case for case-insensitive recall"
+      (is (= #{"Alice" "Carol"}
+             (set (map first (q-one conn '[:find ?n :where [?p :person/name ?n]
+                                                      [(lower-case ?n) ?lc]
+                                                      [(includes? ?lc "a")]]))))))))
+
 (deftest find-specs-shape-the-result
   (let [conn (load-fixture!)
         names-relation (q-one conn '[:find ?n :where [_ :person/name ?n]])]

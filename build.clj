@@ -21,6 +21,7 @@
 (def mcp-version (or (System/getenv "MCP_RELEASE_VERSION") version))
 (def mcp-class-dir "target/mcp-classes")
 (def mcp-jar-file (format "target/%s-%s.jar" (name mcp-lib) mcp-version))
+(def mcp-uber-file (format "target/%s-%s-standalone.jar" (name mcp-lib) mcp-version))
 
 (defn- licenses-pom-data []
   [[:description "The kala memory layer as an MCP server: six tools over stdio — context, record, recall, read, history, turns."]
@@ -62,6 +63,20 @@
       :repository {"clojars" {:url "https://clojars.org/repo"
                               :username (System/getenv "CLOJARS_USERNAME")
                               :password (System/getenv "CLOJARS_PASSWORD")}}})))
+
+(defn mcp-uberjar
+  "One executable jar for the MCP server: `java -jar kala-mcp-<v>-standalone.jar
+  mcp.edn` — no Clojure CLI, no project checkout. Built from the local
+  sources (the same tree the :mcp alias runs), so it always matches the
+  checkout rather than a published release."
+  [_]
+  (b/delete {:path mcp-class-dir})
+  (let [basis (b/create-basis {:project "deps.edn" :aliases [:mcp]})]
+    (b/copy-dir {:src-dirs ["src" "mcp"] :target-dir mcp-class-dir})
+    (b/copy-file {:src "LICENSE" :target (str mcp-class-dir "/LICENSE")})
+    (b/compile-clj {:basis basis :class-dir mcp-class-dir :src-dirs ["src" "mcp"]})
+    (b/uber {:class-dir mcp-class-dir :uber-file mcp-uber-file :main 'kala.mcp :basis basis}))
+  (println "Built" mcp-uber-file))
 
 (defn clean [_]
   (b/delete {:path "target"})

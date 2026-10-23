@@ -1,0 +1,4 @@
+The kala server is still connecting. I’ll look up only its `recall` tool and send one Datalog query that filters note text with `includes?`.The first query matched nothing on `:service/note` for `"paging"`. I’ll run one broader `recall` so `includes?` still filters in the store, across note text that mentions a threshold.QUERY: [:find ?ident ?v :where [?e :service/note ?v] [?e :db/ident ?ident] [(includes? ?v "pages")]]
+NOTE: kafka consumer lag pages the on-call at 3 min backlog
+SERVICE: :service/ingest
+exit=0

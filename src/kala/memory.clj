@@ -543,15 +543,19 @@
 
   :current is memory's content, newest first, capped in facts (:cap,
   default 50, ceiling 500); over cap, :truncated names the dropped
-  attributes and never re-lists their values. :corrections is the full
-  trail of the entities shown — superseded values and retractions,
-  :now nil when retraction resolved them; :corrections? false omits the
-  section. :turns is every session's [t turn] pairs, bounded at the pin.
-  The document is store-wide (sessions are provenance, not partitions)
-  and never carries a wall clock."
-  [db {:keys [as-of cap corrections?] :or {corrections? true}}]
+  attributes and never re-lists their values. :with-t stamps every
+  :current tuple with its asserting t ([e a v t] — a t, never a wall
+  clock); :min-t bounds :current to facts asserted at or after it, before
+  the cap applies. :corrections is the full trail of the entities shown —
+  superseded values and retractions, :now nil when retraction resolved
+  them; :corrections? false omits the section. :turns is every session's
+  [t turn] pairs, bounded at the pin. The document is store-wide
+  (sessions are provenance, not partitions) and never carries a wall
+  clock."
+  [db {:keys [as-of cap corrections? with-t min-t] :or {corrections? true}}]
   (let [db (pin-db db {:as-of as-of})
         cap (opt-int! :cap cap default-cap max-cap)
+        min-t (opt-int! :min-t min-t 1 Long/MAX_VALUE)
         all (api/datoms db :eavt [])
         t (head-t all)
         ident-map (ident-map db)
@@ -560,6 +564,7 @@
         content (->> all
                      (remove (fn [d] (reserved-attr-ns? (:a d))))
                      (remove (fn [d] (eid/tx-eid? (:e d))))
+                     (filter (fn [d] (>= (eid/eid->t (:tx d)) min-t)))
                      (sort-by (fn [d] (- (eid/eid->t (:tx d)))))
                      vec)
         shown (vec (take cap content))
@@ -572,9 +577,10 @@
                            :dropped-attrs (vec (distinct (map :a (drop cap content))))}
                           {:capped? false})
              :current (mapv (fn [d]
-                              [(render-entity ident-map (:e d))
-                               (:a d)
-                               (render-value ref-attrs ident-map (:a d) (:v d))])
+                              (let [tuple [(render-entity ident-map (:e d))
+                                           (:a d)
+                                           (render-value ref-attrs ident-map (:a d) (:v d))]]
+                                (if with-t (conj tuple (eid/eid->t (:tx d))) tuple)))
                             shown)
              :turns (doc-turns db)}
       corrections? (assoc :corrections

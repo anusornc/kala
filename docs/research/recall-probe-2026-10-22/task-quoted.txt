@@ -1,0 +1,9 @@
+Use ONLY the kala MCP server's `recall` tool to answer this — do not call `context`, `read`, `history`, or `turns`, and do not read any files.
+
+Somewhere in memory a service's note mentions a paging alert threshold, but you do not remember the exact wording or which service it belongs to. Write ONE Datalog query whose :where clause filters note values with the `includes?` builtin so the store does the filtering — the query must return both the service entity and the note text. Then answer with exactly three lines, the first being the verbatim query you sent:
+
+QUERY: <the exact EDN query you sent to recall>
+NOTE: <the exact note text>
+SERVICE: <the service ident>
+
+Example of the syntax shape (not the answer): [:find ?e ?v :where [?e :service/note ?v] [(includes? ?v "nightly")]]

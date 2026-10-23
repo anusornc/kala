@@ -1,0 +1,4 @@
+QUERY: [:find ?e ?v :where [?e :service/note ?v] [(includes? ?v "page")]]
+NOTE: kafka consumer lag pages the on-call at 3 min backlog
+SERVICE: :service/ingest
+exit=0

@@ -105,8 +105,12 @@ clojure -M:mcp mcp.edn
 ```
 
 Six tools over stdio, JSON-RPC: `context` (call this first — the capped,
-correction-annotated belief state), `record` (one turn; the server owns the
-session, so tx-data carries no attribution), `recall` (Datalog with joins),
+correction-annotated belief state; `with-t` stamps every `:current` tuple
+with its asserting t, `min-t` bounds it to recent facts), `record` (one
+turn; the server owns the session, so tx-data carries no attribution),
+`recall` (Datalog with joins; the data-only predicate allowlist includes
+the lexical matchers `includes?`/`starts-with?`/`ends-with?` — regex stays
+out: agent-written patterns would be a ReDoS surface on the transactor),
 `read` (one entity, current or as-of), `history` (correction/provenance
 trails), `turns` ("step 12" becomes a t). EDN in, EDN out — arguments that
 carry structure are EDN strings, results are readable EDN, and errors are
@@ -114,6 +118,18 @@ the store's own error maps under the MCP `isError` flag. The harness→server
 hop is same-user local; when the server reaches a remote transactor it
 authenticates with the shared token like any client (see
 [ADR-0006](docs/adr/0006-shared-token-auth-tls-by-termination.md)).
+
+No Clojure CLI at hand? One executable jar runs the server:
+
+```bash
+clojure -T:build mcp-uberjar          # once, from a checkout
+java -jar target/kala-mcp-*-standalone.jar mcp.edn
+```
+
+`server.json` (MCP registry metadata) sits at the repo root, ready for a
+future listing — the official registry's package types do not include
+Maven/Clojars yet, so the listing itself waits on an OCI shim or upstream
+support.
 
 ## Benchmark
 

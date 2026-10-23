@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kala": {
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd /Users/anusornchaikaew/Work/kala && exec /opt/homebrew/bin/clojure -M:mcp /tmp/kala-probe/claude.edn"
+      ]
+    }
+  }
+}

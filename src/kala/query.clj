@@ -19,7 +19,10 @@
   {'< < '> > '<= <= '>= >= '= = 'not= not=
    '+ + '- - '* * 'quot quot 'mod mod 'inc inc 'dec dec
    'str str 'count count
-   'lower-case str/lower-case 'upper-case str/upper-case})
+   'lower-case str/lower-case 'upper-case str/upper-case
+   ;; lexical recall: pure predicates over bound values; regex stays out —
+   ;; agent-written patterns would be a ReDoS surface on the transactor
+   'includes? str/includes? 'starts-with? str/starts-with? 'ends-with? str/ends-with?})
 
 ;; ---- query parsing ----------------------------------------------------------
 

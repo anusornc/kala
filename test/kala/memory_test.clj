@@ -438,6 +438,37 @@
     (testing "a garbage cap raises"
       (assert-error :memory/bad-option (memory/context db {:cap 0})))))
 
+(deftest context-with-t-and-min-t
+  (let [conn (fresh-conn)
+        {:keys [ts]} (context-fixture! conn)
+        [t1 t2 t3 t4 t5] ts
+        db (api/db conn)]
+    (testing ":with-t stamps each :current tuple with its asserting t"
+      (is (= [[:proj/kala :proj/deploy-command "v2" t4]
+              [:proj/kala :proj/alias "a2" t3]
+              [:proj/kala :proj/test-command "clojure -M:test" t2]]
+             (:current (memory/context db {:with-t true})))))
+    (testing "the default stays a triple — opt-in, not a shape change"
+      (is (every? #(= 3 (count %)) (:current (memory/context db {})))))
+    (testing ":min-t bounds :current to facts asserted at or after it"
+      (is (= [[:proj/kala :proj/deploy-command "v2"]]
+             (:current (memory/context db {:min-t t4}))))
+      (is (= [[:proj/kala :proj/deploy-command "v2"]
+              [:proj/kala :proj/alias "a2"]]
+             (:current (memory/context db {:min-t t3})))))
+    (testing "corrections stay the full trail of the shown entities, even where :min-t hid facts"
+      (is (= [{:entity :proj/kala :attr :proj/alias
+               :was "a1" :asserted t3 :until t5 :now nil}
+              {:entity :proj/kala :attr :proj/deploy-command
+               :was "v1" :asserted t1 :until t4 :now "v2"}]
+             (:corrections (memory/context db {:min-t t4}))))
+      "the alias trail survives: :proj/kala is shown, its trail is the whole trail")
+    (testing "min-t composes with the cap and with-t"
+      (is (= [[:proj/kala :proj/deploy-command "v2" t4]]
+             (:current (memory/context db {:min-t t3 :cap 1 :with-t true})))))
+    (testing "a garbage min-t raises"
+      (assert-error :memory/bad-option (memory/context db {:min-t 0})))))
+
 (deftest context-corrections-cover-retractions-and-sets
   (let [conn (fresh-conn)
         _ (install-proj-vocab! conn)

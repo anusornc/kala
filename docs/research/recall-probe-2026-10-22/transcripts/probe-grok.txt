@@ -1,0 +1,3 @@
+The kala server is still connecting. I'll look up only the `recall` tool schema, then run one Datalog query that filters note text with `includes?`.NOTE: kafka consumer lag pages the on-call at 3 min backlog
+SERVICE: :service/ingest
+exit=0

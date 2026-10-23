@@ -16,7 +16,11 @@
   The protocol is a pure seam: handle takes a request map and returns the
   reply map (nil for notifications); serve! is the only line-reading
   loop. Nothing but protocol traffic ever reaches stdout — the server
-  mutters to stderr or not at all."
+  mutters to stderr or not at all.
+
+  gen-class exists for the standalone jar (build/mcp-uberjar): java -jar
+  needs a real main class, the -M path never touches it."
+  (:gen-class)
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.data.json :as json]
@@ -74,12 +78,14 @@
                     :message (.getMessage e)}))))
 
 (defn- tool-context
-  [state {:keys [as-of cap corrections]}]
+  [state {:keys [as-of cap corrections with-t min-t]}]
   (memory/context (db state)
                   (cond-> {}
                     as-of (assoc :as-of (opt-long! as-of))
                     cap (assoc :cap (opt-long! cap))
-                    (some? corrections) (assoc :corrections? (boolean corrections)))))
+                    (some? corrections) (assoc :corrections? (boolean corrections))
+                    (some? with-t) (assoc :with-t (boolean with-t))
+                    min-t (assoc :min-t (opt-long! min-t)))))
 
 (defn- tx-data-arg!
   "record's tx-data: an EDN string holding ONE vector of ops. Agents write
@@ -179,16 +185,18 @@
   "The #43 lock, verbatim: six bare-named tools, one per memory op. The
   descriptions steer the agent — context first, record writes one turn."
   []
-  [{:name "context"
+   [{:name "context"
     :description "The belief-state document: everything memory holds (or held as-of t), capped, correction-annotated. Call this first."
     :inputSchema (schema {:required []
                           :props {"as-of" {:type "integer" :description "read the belief state as of this t"}
                                   "cap" {:type "integer" :description "max facts in :current (default 50)"}
-                                  "corrections" {:type "boolean" :description "include the corrections trail (default true)"}}})}
+                                  "corrections" {:type "boolean" :description "include the corrections trail (default true)"}
+                                  "with-t" {:type "boolean" :description "stamp each :current tuple with its asserting t ([e a v t])"}
+                                  "min-t" {:type "integer" :description "keep only facts asserted at or after this t, before the cap"}}})}
    {:name "record"
     :description "Record one turn of memory: tx-data becomes exactly one transaction attributed to this session. Returns the turn's t and ordinal plus resolved tempids. To cite an earlier turn use its :tx value (a tx entity id) — never its t. New vocabulary registers and applies in the same transaction; to address an existing entity by a unique attribute, register-and-upsert via a tempid carrying the unique value, or resolve its eid with the read tool first."
     :inputSchema (schema {:required [:tx-data]
-                          :props {"tx-data" {:type "string" :description "EDN vector of transaction ops, e.g. \"[:db/add [:proj/kala] :proj/note \\\"hello\\\"]\" — the string \"datomic.tx\" in a ref position cites this turn"}}})}
+                          :props {"tx-data" {:type "string" :description "EDN vector of transaction ops, e.g. \"[:db/add :proj/kala :proj/note \\\"hello\\\"]\" — an ident in the :e slot is that entity; the string \"datomic.tx\" in a ref position cites this turn"}}})}
    {:name "recall"
     :description "Run a Datalog query over memory — joins included. List results are capped and any cap is reported."
     :inputSchema (schema {:required [:query]
