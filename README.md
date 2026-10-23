@@ -135,7 +135,7 @@ together on release):
 
 ```bash
 clojure -T:build mcp-uberjar
-docker build -t ghcr.io/anusornc/kala-mcp:0.4.0 -f docker/Dockerfile . && docker push ghcr.io/anusornc/kala-mcp:0.4.0
+docker build -t ghcr.io/anusornc/kala-mcp:0.5.0 -f docker/Dockerfile . && docker push ghcr.io/anusornc/kala-mcp:0.5.0
 mcp-publisher login github && mcp-publisher publish
 ```
 
@@ -191,8 +191,8 @@ Then connect remotely with `kala.client/connect` — see [docs/wire-protocol.md]
 Kala is published to [Clojars](https://clojars.org/io.github.anusornc/kala):
 
 ```clojure
-io.github.anusornc/kala     {:mvn/version "0.4.0"}   ; the database + memory layer
-io.github.anusornc/kala-mcp {:mvn/version "0.4.0"}   ; the MCP server (separate artifact)
+io.github.anusornc/kala     {:mvn/version "0.5.0"}   ; the database + memory layer
+io.github.anusornc/kala-mcp {:mvn/version "0.5.0"}   ; the MCP server (separate artifact)
 ```
 
 Releases are tag-triggered: pushing a `v*` tag runs the behavioral matrix

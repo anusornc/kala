@@ -9,5 +9,5 @@ COPY target/kala-mcp-*-standalone.jar /opt/kala-mcp.jar
 # both the config and the store ride mounts — persistence across restarts
 # was tested with exactly this invocation:
 #   docker run -i -v $PWD/mcp.edn:/data/mcp.edn -v $PWD/store:/data/store \
-#     ghcr.io/anusornc/kala-mcp:0.4.0
+#     ghcr.io/anusornc/kala-mcp:0.5.0
 ENTRYPOINT ["java", "-jar", "/opt/kala-mcp.jar", "/data/mcp.edn"]
