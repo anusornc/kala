@@ -246,7 +246,7 @@
   {:protocolVersion (or (when (contains? known-versions protocolVersion) protocolVersion)
                         protocol-version)
    :capabilities {:tools {}}
-   :serverInfo {:name "kala-mcp" :version "0.1.0"}})
+   :serverInfo {:name "kala-mcp" :version "0.5.0"}})
 
 (defn handle
   "One JSON-RPC request map in, the reply map out — nil for notifications.
