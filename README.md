@@ -57,6 +57,35 @@ every acked transaction survive. EDN in, EDN out — responses carry pr-str'd
 values. The server binds 127.0.0.1; tx-data is read with clojure.edn (same
 documented no-sandboxing posture as ADR-0004).
 
+## Monitor
+
+```bash
+clojure -M:monitor --store /var/data/agent-memory        # own a transactor
+clojure -M:monitor --attach 127.0.0.1:4334:SECRET        # ride a running one
+clojure -M:monitor --store /tmp/try.edn-dir --seed       # a seeded scratch store
+```
+
+The second web app: the store's transactions drawn as a **knowledge graph of
+entity and turn nodes** ([web/kala/monitor.clj](web/kala/monitor.clj)). The
+monitor speaks **client mode and nothing else** (ADR-0012) — every read
+travels the wire to a live transactor, the peer path does not exist in its
+code, and starting a transactor on the target store is the prerequisite (the
+`--store` form starts an owned one for you and connects over loopback).
+A kala.backup log export is viewed by restoring it into a fresh store
+directory first (see [Backup and migration](#backup-and-migration)) and
+pointing `--store` at that; `--seed` records a small deterministic memory
+store through the client connection for a first look.
+
+One shared view — filter, as-of, selection — through three switchable view
+modes: **force soup** (physics, relation exploration), **turn rail** (the
+t-order spine with entity lanes), and **bipartite columns** (always-labeled
+structure). **Follow** renders each commit as the transactor lands it;
+**freeze** pins one belief state and resuming jumps to head, never replays.
+The as-of slider travels the total order; click a turn node for the datoms it
+transacted, an entity node for its correction trail. Hand-rolled SVG, zero
+dependencies, binds 127.0.0.1, read-only — the endpoints are graph reads, a
+head ping, and two drilldowns.
+
 ## Memory for agents
 
 Kala ships a memory layer (`kala.memory`, inside the core jar) and an MCP

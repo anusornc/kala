@@ -19,10 +19,10 @@
             [clojure.java.io :as io]
             [clojure.set :as cset]
             [clojure.string :as str]
-            [kala.api :as api])
+            [kala.api :as api]
+            [kala.httpd :as httpd])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
            [java.net InetSocketAddress]
-           [java.nio.charset StandardCharsets]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]
            [java.util.concurrent Executors]
@@ -72,52 +72,7 @@
       [{:db/id "dave" :person/name "Dave" :person/age 28
         :person/tag ["clojure" "datalog"]}])))
 
-;; ---- tiny JSON writer (values render as EDN strings on purpose) --------------
-
-(defn- jlit ^String [^String s]
-  (str "\"" (-> s
-                (str/replace "\\" "\\\\")
-                (str/replace "\"" "\\\"")
-                (str/replace "\n" "\\n")
-                (str/replace "\r" "\\r")
-                (str/replace "\t" "\\t"))
-       "\""))
-
-(declare jval)
-
-(defn- ^:private jval [v]
-  (cond
-    (instance? Boolean v) (str v)
-    (number? v) (str v)
-    (string? v) (jlit v)
-    (sequential? v) (str "[" (str/join "," (map jval v)) "]")
-    :else (jlit (pr-str v))))
-
-(defn- jobj ^String [m]
-  (str "{" (str/join "," (map (fn [[k v]] (str (jlit (name k)) ":" (jval v))) m)) "}"))
-
-;; ---- http plumbing -------------------------------------------------------------
-
-(defn- body-text ^String [^HttpExchange ex]
-  (slurp (.getRequestBody ex) :encoding "UTF-8"))
-
-(defn- respond! [^HttpExchange ex status ^String ctype ^String body]
-  (let [bytes (.getBytes body StandardCharsets/UTF_8)]
-    (.add (.getResponseHeaders ex) "Content-Type" ctype)
-    (.sendResponseHeaders ex status (alength bytes))
-    (doto (.getResponseBody ex)
-      (.write bytes)
-      (.close))))
-
-(defn- respond-json! [^HttpExchange ex status m]
-  (respond! ex status "application/json; charset=utf-8" (jobj m)))
-
-(defn- params [^HttpExchange ex]
-  (into {}
-        (for [pair (str/split (or (.. ex getRequestURI getQuery) "") #"&")
-              :when (pos? (.length pair))
-              :let [[k v] (str/split pair #"=" 2)]]
-          [(keyword k) (or v "")])))
+;; ---- http plumbing (shared with the monitor in kala.httpd) ---------------------
 
 (defn- statics
   "Whitelisted static resources off the classpath (web/public is a classpath
@@ -131,33 +86,9 @@
     (if-let [[_ [resource ctype]] (find served path)]
       (let [src (io/resource resource)]
         (if src
-          (respond! ex 200 ctype (slurp src :encoding "UTF-8"))
-          (respond! ex 404 "text/plain; charset=utf-8" "not found")))
-      (respond! ex 404 "text/plain; charset=utf-8" "not found"))))
-
-(defn- handler
-  "Wrap an api fn: it receives the exchange and parsed query params and
-  returns a response map; any ex-info becomes the project's error envelope
-  over the wire — kinds and all."
-  [api-fn]
-  (reify HttpHandler
-    ;; no arg hints here: inside reify the compiler treats hinted args'
-    ;; interop as Object and rejects it for this void method — the try/
-    ;; finally shape is the one that compiles clean
-    (handle [_ ex]
-      (try
-        (let [{:keys [status m]} (api-fn ex (params ex))]
-          (respond-json! ex (or status 200) m))
-        (catch clojure.lang.ExceptionInfo e
-          (respond-json! ex 400 {:ok false
-                                 :kind (:kala/error (ex-data e))
-                                 :message (.getMessage e)
-                                 :data (dissoc (ex-data e) :kala/error)}))
-        (catch Throwable e
-          (respond-json! ex 400 {:ok false
-                                 :kind :web/bad-input
-                                 :message (.getMessage e)}))
-        (finally (.close ex))))))
+          (httpd/respond! ex 200 ctype (slurp src :encoding "UTF-8"))
+          (httpd/respond! ex 404 "text/plain; charset=utf-8" "not found")))
+      (httpd/respond! ex 404 "text/plain; charset=utf-8" "not found"))))
 
 ;; ---- api endpoints ---------------------------------------------------------------
 
@@ -172,7 +103,7 @@
        (mapv pr-str)))
 
 (defn- api-query [^HttpExchange ex {:keys [as-of]}]
-  (let [q (edn/read-string (body-text ex))
+  (let [q (edn/read-string (httpd/body-text ex))
         db (db-with-as-of as-of)
         t0 (System/nanoTime)
         rel (api/q q db)
@@ -186,7 +117,7 @@
          :ms ms}}))
 
 (defn- api-transact [^HttpExchange ex _]
-  (let [tx-data (edn/read-string (body-text ex))
+  (let [tx-data (edn/read-string (httpd/body-text ex))
         report (api/transact (:conn @state) tx-data)
         tx-datoms (mapv (fn [d]
                           (str (:e d) " " (:a d) " " (pr-str (:v d))
@@ -268,8 +199,8 @@
                                      (try (statics ex)
                                           (catch Throwable t
                                             (println :STATIC-ERR (.getMessage t))
-                                            (respond! ex 500 "text/plain; charset=utf-8"
-                                                      (str "static error: " (.getMessage t))))
+                                            (httpd/respond! ex 500 "text/plain; charset=utf-8"
+                                                            (str "static error: " (.getMessage t))))
                                           (finally (.close ex))))))
       (doseq [[path f] (partition 2
                                   ["/api/query" api-query
@@ -278,7 +209,7 @@
                                    "/api/history" api-history
                                    "/api/meta" api-meta
                                    "/api/reopen" api-reopen])]
-        (.createContext server path (handler f)))
+        (.createContext server path (httpd/handler f {:fallback-kind :web/bad-input})))
       (.setExecutor server (Executors/newCachedThreadPool))
       (.start server)
       (println "Kala web demo → http://127.0.0.1:" port)

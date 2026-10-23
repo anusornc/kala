@@ -129,7 +129,7 @@ expect_eq "flat op kind" "$(jget "$r" "m['kind']")" :transact/bad-op
 # compare-and-swap: stale old fails with the structured kind; retry works
 r=$(curl -s -X POST "$BASE/api/transact" -d "[[:db.fn/cas $EVE :person/age 30 31]]")
 expect_eq "stale cas kind" "$(jget "$r" "m['kind']")" :transact/cas-failed
-expect_contains "cas carries actual" "$r" ':actual'
+expect_contains "cas carries actual" "$r" '"actual"'
 r=$(curl -s -X POST "$BASE/api/transact" -d "[[:db.fn/cas $EVE :person/age 19 20]]")
 expect_eq "matching cas ok" "$(jget "$r" "m['ok']")" True
 

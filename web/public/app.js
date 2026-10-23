@@ -38,7 +38,7 @@ function showError(status, resultEl, data, extraHint) {
   status.innerHTML =
     `<span class="fail">${esc(String(data.kind))}</span> ${esc(data.message || "")}` +
     (extraHint ? ` <span class="hint">${esc(extraHint)}</span>` : "");
-  resultEl.innerHTML = data.data ? `<pre>${esc(String(data.data))}</pre>` : "";
+  resultEl.innerHTML = data.data ? `<pre>${esc(JSON.stringify(data.data, null, 1))}</pre>` : "";
 }
 
 async function refreshMeta() {

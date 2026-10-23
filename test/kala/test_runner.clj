@@ -11,6 +11,7 @@
             [kala.api-test]
             [kala.map-tx-test]
             [kala.memory-test]
+            [kala.monitor-graph-test]
             [kala.pull-entity-test]
             [kala.query-rules-test]
             [kala.query-test]
@@ -33,6 +34,7 @@
   ['kala.api-test
    'kala.map-tx-test
    'kala.memory-test
+   'kala.monitor-graph-test
    'kala.pull-entity-test
    'kala.query-rules-test
    'kala.query-test
@@ -77,8 +79,13 @@
 (defn- merge-counts [a b]
   [(+ (a 0) (b 0)) (+ (a 1) (b 1))])
 
-(defn -main [& _]
-  (let [matrix-counts
+(defn -main [& nses]
+  ;; optional args: run only the named namespaces (matrix + once lists
+  ;; restricted to them) — the single-file loop for development
+  (let [only (when (seq nses) (set (map symbol nses)))
+        behavioral (if only (filter only behavioral-ns-symbols) behavioral-ns-symbols)
+        once (if only (filter only once-ns-symbols) once-ns-symbols)
+        matrix-counts
         (mapv (fn [{:keys [mode storage path]}]
                 (binding [kala.test-util/*access-mode* mode
                           kala.test-util/*storage-opts*
@@ -93,13 +100,13 @@
 
                                             :else
                                             (run-counting #(t/run-tests ns-sym))))
-                                        behavioral-ns-symbols)))))
+                                        behavioral)))))
               matrix)
         [mf me] (reduce merge-counts [0 0] matrix-counts)
         [bf be] (reduce merge-counts [0 0]
                         (mapv (fn [ns-sym]
                                 (println "\n=== backend:" ns-sym "===")
                                 (run-counting #(t/run-tests ns-sym)))
-                              once-ns-symbols))]
+                              once))]
     (println (str "\nmatrix total: " (+ mf bf) " failures, " (+ me be) " errors"))
     (System/exit (if (zero? (+ mf bf me be)) 0 1))))

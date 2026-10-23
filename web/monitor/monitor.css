@@ -1,0 +1,163 @@
+/* Kala monitor — dark, quiet, monospace-forward, same family as the demo. */
+
+:root {
+  --bg: #14161a;
+  --panel: #1d2026;
+  --ink: #e8e6e0;
+  --mut: #8a8f98;
+  --acc: #e0a458;
+  --ok: #7bc47f;
+  --fail: #e06c6c;
+  --line: #2a2e35;
+  --mono: "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 -apple-system, system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+h1 { font-size: 18px; margin: 0; }
+.thin { color: var(--mut); font-weight: 400; }
+.hint { color: var(--mut); font-size: 12px; }
+
+.badge {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: var(--mut);
+}
+.badge b { color: var(--acc); font-weight: 600; }
+
+nav {
+  padding: 8px 24px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+  font: 12px var(--mono);
+  color: var(--mut);
+}
+
+nav label { display: flex; align-items: center; gap: 8px; }
+nav select, nav input {
+  font: 12px var(--mono);
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+nav input.num { width: 90px; }
+nav input[type="range"] { width: 240px; accent-color: var(--acc); }
+nav b { color: var(--acc); font-weight: 600; min-width: 40px; }
+
+button {
+  font: inherit;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--acc); }
+button.primary { border-color: var(--acc); color: var(--acc); }
+button.frozen { background: var(--acc); color: var(--bg); font-weight: 600; }
+
+#stage { flex: 1; overflow: auto; padding-bottom: 76px; position: relative; }
+svg { display: block; }
+
+.cap { fill: var(--mut); font: 11px var(--mono); }
+.edge { stroke: var(--mut); stroke-opacity: .35; fill: none; stroke-width: 1; }
+.edge.retract { stroke: var(--fail); stroke-opacity: .85; stroke-width: 1.4; }
+.edge.cite { stroke: var(--acc); stroke-opacity: .55; stroke-width: 1.1; stroke-dasharray: 3 3; }
+.edge.touch { stroke-width: 0; }
+.edge.touch.retract { fill: var(--fail); }
+.hl .edge { opacity: .05; }
+.hl .edge.on { opacity: 1; stroke-width: 1.8; }
+.hl .edge.touch.on { stroke-width: 0; }
+.node { cursor: pointer; }
+.node.entity { fill: var(--panel); stroke: var(--ink); stroke-width: 1.2; }
+.node.turn { stroke: var(--bg); stroke-width: .8; }
+.hl .node { opacity: .15; }
+.hl .node.on, .hl .node.nbr { opacity: 1; }
+.railline { stroke: var(--mut); stroke-width: 1.5; }
+.lane { stroke: var(--line); stroke-width: 1; }
+.tlab { fill: var(--mut); font: 10px var(--mono); }
+.elab { fill: var(--ink); font: 11px var(--mono); }
+
+.detail {
+  position: fixed;
+  top: 118px;
+  right: 16px;
+  width: 320px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: 12px var(--mono);
+  line-height: 1.6;
+  z-index: 9;
+  max-height: 45vh;
+  overflow: auto;
+}
+.detail .dim { color: var(--mut); }
+.detail .bad { color: var(--fail); font-style: normal; }
+.detail .good { color: var(--ok); font-style: normal; }
+.detail[hidden] { display: none; }
+
+.bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid #3a3f48;
+  border-radius: 999px;
+  padding: 8px 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  z-index: 10;
+}
+.bar button {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+.bar span { font: 12px var(--mono); color: var(--acc); min-width: 190px; text-align: center; }
+
+footer {
+  padding: 6px 24px 10px;
+  font: 11px var(--mono);
+  color: var(--mut);
+  flex: none;
+}
+footer a { color: var(--mut); }

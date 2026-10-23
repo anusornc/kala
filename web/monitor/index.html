@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kala · monitor</title>
+<link rel="stylesheet" href="/monitor.css">
+</head>
+<body>
+<header>
+  <h1>Kala <span class="thin">monitor</span></h1>
+  <span class="badge"><b id="stat">…</b></span>
+  <span class="badge" id="posture">…</span>
+  <span class="hint">client mode — every read travels the wire to a live transactor (ADR-0012)</span>
+</header>
+
+<nav>
+  <label>session
+    <select id="session"><option value="">all sessions</option></select>
+  </label>
+  <label>window
+    <input id="window" type="number" min="1" placeholder="all t" class="num">
+  </label>
+  <label class="slider">as-of
+    <input id="asof" type="range" min="1" max="1" value="1">
+    <b id="asof-label">now</b>
+  </label>
+  <button id="posture-btn" class="primary">freeze</button>
+</nav>
+
+<main id="stage"></main>
+<aside id="detail" class="detail" hidden></aside>
+
+<div class="bar">
+  <button id="prev" title="previous view">‹</button>
+  <span id="vlabel"></span>
+  <button id="next" title="next view">›</button>
+</div>
+
+<footer>
+  turns are the total order — every transaction, attributed or not · click a
+  turn for its datoms, an entity for its correction trail · the monitor is
+  never a peer <a href="https://github.com/anusornc/kala">anusornc/kala</a>
+</footer>
+
+<script src="/monitor.js"></script>
+</body>
+</html>
