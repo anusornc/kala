@@ -68,6 +68,50 @@ _Avoid_: session log, turn table
 One readable-EDN belief-state map assembled for an LLM: :current content capped in facts — opt-in :with-t stamps each fact's asserting t, :min-t bounds it to facts asserted since — :corrections the trail of the entities shown, :turns the [t, turn] pairs — everything read as of one t, never carrying a wall clock.
 _Avoid_: prompt, summary, pull doc
 
+### Monitor
+
+The second web app's language: a client-mode UI drawing a store's transactions as a knowledge graph.
+
+**monitor**:
+The second web app: a client-mode UI drawing a store's transactions as a knowledge graph of entity and turn nodes. Every read travels the wire to a live transactor — a monitor is never a peer.
+_Avoid_: dashboard, viewer, admin UI
+
+**turn node**:
+The graph node for one turn: the transaction entity at its t, placed in the store's total order.
+_Avoid_: tx node, commit node
+
+**entity node**:
+The graph node for one user entity as of the viewed t; attributes label edges, they are not nodes.
+_Avoid_: fact node, datom node
+
+**assert edge**:
+A turn-to-entity edge labeled with the attribute the turn asserted.
+_Avoid_: delta edge, change edge
+
+**retract edge**:
+The turn-to-entity edge for an assertion the turn removed; retracts over time are the visible corrections trail.
+_Avoid_: deletion edge, tombstone
+
+**citation edge**:
+A turn-to-turn edge recorded by :memory/source: one turn citing another as its source.
+_Avoid_: provenance edge, link
+
+**ref edge**:
+The entity-to-entity edge through a :db.type/ref attribute; the drawing's fourth edge kind.
+_Avoid_: relation edge, link
+
+**correction trail**:
+The ordered assert and retract history of one entity, each step attributed to its turn and session.
+_Avoid_: change history, edit log
+
+**follow**:
+The monitor's live posture: render each transaction as the transactor commits it, within the active filter's scope.
+_Avoid_: streaming, realtime
+
+**freeze**:
+The monitor's stopped posture: pinned to one belief state as of a chosen t while commits accumulate unseen; resuming jumps to head, never replays.
+_Avoid_: pause, snapshot
+
 ### Schema
 
 **attribute**:
