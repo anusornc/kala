@@ -9,10 +9,14 @@
     "source": "github"
   },
   "version": "0.4.0",
-  "_meta": {
-    "io.modelcontextprotocol.registry/publisher-provided": {
-      "distribution": "Clojars (io.github.anusornc/kala-mcp) or a standalone executable jar built with `clojure -T:build mcp-uberjar`",
-      "listingBlocker": "The official registry's package registryTypes (npm, pypi, cargo, oci, nuget, mcpb) include no Maven/Clojars type as of the 2025-12-11 schema; a listing needs an OCI-shimmed jar or upstream support."
+  "packages": [
+    {
+      "registryType": "oci",
+      "registryBaseUrl": "https://ghcr.io",
+      "identifier": "ghcr.io/anusornc/kala-mcp:0.4.0",
+      "transport": {
+        "type": "stdio"
+      }
     }
-  }
+  ]
 }

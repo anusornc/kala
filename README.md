@@ -126,10 +126,18 @@ clojure -T:build mcp-uberjar          # once, from a checkout
 java -jar target/kala-mcp-*-standalone.jar mcp.edn
 ```
 
-`server.json` (MCP registry metadata) sits at the repo root, ready for a
-future listing — the official registry's package types do not include
-Maven/Clojars yet, so the listing itself waits on an OCI shim or upstream
-support.
+`server.json` (MCP registry metadata) sits at the repo root. The official
+registry has no Maven/Clojars package type, so the listing rides the "oci"
+type: [docker/Dockerfile](docker/Dockerfile) wraps the standalone jar, and
+its label carries the registry's ownership annotation. Publishing is three
+user-authenticated commands (bump `server.json`'s version and the image tag
+together on release):
+
+```bash
+clojure -T:build mcp-uberjar
+docker build -t ghcr.io/anusornc/kala-mcp:0.4.0 -f docker/Dockerfile . && docker push ghcr.io/anusornc/kala-mcp:0.4.0
+mcp-publisher login github && mcp-publisher publish
+```
 
 ## Benchmark
 
