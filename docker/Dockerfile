@@ -6,6 +6,8 @@ FROM eclipse-temurin:21-jre-alpine
 # ownership verification: this label MUST equal server.json's name
 LABEL io.modelcontextprotocol.server.name="io.github.anusornc/kala-mcp"
 COPY target/kala-mcp-*-standalone.jar /opt/kala-mcp.jar
-# the store config rides a mount:
-#   docker run -i -v $PWD/mcp.edn:/data/mcp.edn ghcr.io/anusornc/kala-mcp:0.4.0
+# both the config and the store ride mounts — persistence across restarts
+# was tested with exactly this invocation:
+#   docker run -i -v $PWD/mcp.edn:/data/mcp.edn -v $PWD/store:/data/store \
+#     ghcr.io/anusornc/kala-mcp:0.4.0
 ENTRYPOINT ["java", "-jar", "/opt/kala-mcp.jar", "/data/mcp.edn"]
