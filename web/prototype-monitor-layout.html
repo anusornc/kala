@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kala · monitor layout prototype (throwaway)</title>
+<!--
+  PROTOTYPE — throwaway. Delete after the verdict is captured.
+
+  Question: at ~200 nodes (turn nodes + entity nodes), does the monitor's
+  knowledge graph read better as a force-directed soup or as a turn rail
+  in t order? Bipartite columns is the third, no-physics control.
+
+  Plan: three variants of the monitor graph — force soup / turn rail /
+  bipartite columns — switchable via ?variant= on this standalone page.
+
+  Run:   open web/prototype-monitor-layout.html     (no server, no build)
+
+  Data is a seeded synthetic memory store shaped like the monitor's model:
+  interleaved sessions, one turn per t, assert/retract/citation edges.
+  Not wired into any build — this file is the whole prototype.
+  Verdict (2026-10-23, user): no single winner — keep all three. The
+  monitor treats them as switchable view modes over one shared view
+  (same filter, as-of, selection): force for exploring relations, rail
+  for the t-order spine, columns for always-labeled structure. The
+  floating bar graduates into the monitor's view switcher. Captured on
+  branch prototype/monitor-layout; spec next via /to-spec.
+-->
+<style>
+:root {
+  --bg: #14161a; --panel: #1d2026; --ink: #e8e6e0; --mut: #8a8f98;
+  --acc: #e0a458; --ok: #7bc47f; --fail: #e06c6c; --line: #2a2e35;
+  --mono: "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, system-ui, sans-serif;
+  display: flex; flex-direction: column;
+}
+header {
+  padding: 12px 24px; display: flex; align-items: center; gap: 14px;
+  flex-wrap: wrap; border-bottom: 1px solid var(--line); flex: none;
+}
+h1 { font-size: 18px; margin: 0; }
+.thin { color: var(--mut); font-weight: 400; }
+.badge {
+  font-family: var(--mono); font-size: 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
+  color: var(--mut);
+}
+.badge b { color: var(--acc); font-weight: 600; }
+#legend {
+  flex: none; padding: 8px 24px 0; font: 12px var(--mono); color: var(--mut);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+#legend .chip {
+  display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  vertical-align: -1px; margin-right: 3px;
+}
+#legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--panel); border: 1.4px solid var(--ink); vertical-align: -1px; }
+#legend .dia { display: inline-block; width: 8px; height: 8px; background: var(--mut);
+  transform: rotate(45deg); vertical-align: -1px; margin-right: 3px; }
+#hypo {
+  flex: none; padding: 2px 24px 8px; font: italic 13px/1.4 system-ui;
+  color: var(--acc);
+}
+#stage { flex: 1; overflow: auto; padding-bottom: 76px; }
+svg { display: block; }
+
+.cap { fill: var(--mut); font: 11px var(--mono); }
+.edge { stroke: var(--mut); stroke-opacity: .35; fill: none; stroke-width: 1; }
+.edge.retract { stroke: var(--fail); stroke-opacity: .85; stroke-width: 1.4; }
+.edge.cite { stroke: var(--acc); stroke-opacity: .55; stroke-width: 1.1; stroke-dasharray: 3 3; }
+.edge.touch { stroke-width: 0; }
+.edge.touch.retract { fill: var(--fail); }
+.hl .edge { opacity: .05; }
+.hl .edge.on { opacity: 1; stroke-width: 1.8; }
+.hl .edge.touch.on { stroke-width: 0; }
+.node { cursor: pointer; }
+.node.entity { fill: var(--panel); stroke: var(--ink); stroke-width: 1.2; }
+.node.turn { stroke: var(--bg); stroke-width: .8; }
+.hl .node { opacity: .15; }
+.hl .node.on, .hl .node.nbr { opacity: 1; }
+.railline { stroke: var(--mut); stroke-width: 1.5; }
+.lane { stroke: var(--line); stroke-width: 1; }
+.tlab { fill: var(--mut); font: 10px var(--mono); }
+.elab { fill: var(--ink); font: 11px var(--mono); }
+
+.detail {
+  position: fixed; top: 110px; right: 16px; width: 300px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  font: 12px var(--mono); line-height: 1.6; z-index: 9;
+  max-height: 45vh; overflow: auto;
+}
+.detail .dim { color: var(--mut); }
+.detail .bad { color: var(--fail); font-style: normal; }
+.detail[hidden] { display: none; }
+
+.bar {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel); border: 1px solid #3a3f48; border-radius: 999px;
+  padding: 8px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.5); z-index: 10;
+}
+.bar button {
+  font: inherit; background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 50%;
+  width: 28px; height: 28px; padding: 0; cursor: pointer; line-height: 1;
+}
+.bar button:hover { border-color: var(--acc); }
+.bar span { font: 12px var(--mono); color: var(--acc); min-width: 190px; text-align: center; }
+.foot { position: fixed; left: 16px; bottom: 18px; font: 11px var(--mono); color: var(--mut); z-index: 8; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Kala <span class="thin">monitor — layout prototype</span></h1>
+  <span class="badge"><b id="stat">…</b></span>
+  <span class="badge">client-only per ADR-0012 · hand-rolled SVG</span>
+</header>
+
+<div id="legend">
+  <span class="chip" style="background:#e0a458"></span>s1
+  <span class="chip" style="background:#7bc47f"></span>s2
+  <span class="chip" style="background:#6ea8dc"></span>s3
+  <span class="chip" style="background:#c792ea"></span>s4
+  <span class="chip" style="background:#d7ba7d"></span>s5
+  <span class="chip" style="background:#4ec9b0"></span>s6
+  <span>·</span>
+  <span class="dot"></span> entity node
+  <span class="dia"></span> turn node
+  <span style="color:var(--mut)">—</span> assert
+  <span style="color:var(--fail)">✕</span> retract
+  <span style="color:var(--acc)">⌒</span> citation
+  <span>· hover anything to trace it</span>
+</div>
+<div id="hypo"></div>
+
+<main id="stage"></main>
+<aside id="detail" class="detail" hidden></aside>
+
+<div class="bar">
+  <button id="prev" title="previous variant">‹</button>
+  <span id="vlabel"></span>
+  <button id="next" title="next variant">›</button>
+</div>
+<div class="foot">throwaway — answers one question: force vs turn-rail at ~200 nodes</div>
+
+<script>
+"use strict";
+
+// ---- tiny helpers -----------------------------------------------------------
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function svgEl(name, attrs, text) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", name);
+  if (attrs) for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+function svgPoint(svg, e) {
+  const r = svg.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+const SESSION_COLORS = ["#e0a458", "#7bc47f", "#6ea8dc", "#c792ea", "#d7ba7d", "#4ec9b0"];
+
+// ---- synthetic memory store ---------------------------------------------------
+// Interleaved sessions transacting against one store: each t is one turn
+// (exactly one transaction), each turn asserts/retracts on 1-4 entities and
+// sometimes cites an earlier turn of its own session via :memory/source.
+
+const VOCAB = {
+  person: [":person/name", ":person/role", ":person/team"],
+  note:   [":note/title", ":note/body", ":note/tag"],
+  fact:   [":fact/claim", ":fact/status"],
+  task:   [":task/title", ":task/state", ":task/owner"],
+};
+const NAMES = ["Ada","Bo","Cy","Dee","Eli","Fay","Gus","Hal","Ida","Jo","Kai","Lim","Mo","Nia","Omar","Pia","Quinn","Ravi","Sena","Tao","Uma","Vik","Wren","Xiu","Yara","Zed"];
+const NOTE_TITLES = ["retry logic","cache warm","auth flow","index notes","tx retry","ddl draft","bench plan","client demo","release notes","log tail","wire proto","id packing"];
+const FACT_CLAIMS = ["staging-eu is live","single-writer holds","EPL accepted","registry synced","fixture t=42","client listen works"];
+const TASK_TITLES = ["wire listen","drop peer path","port e2e","tag release","trim fixture","doc as-of"];
+const LABEL = {
+  person: r => NAMES[Math.floor(r() * NAMES.length)],
+  note:   r => NOTE_TITLES[Math.floor(r() * NOTE_TITLES.length)],
+  fact:   r => FACT_CLAIMS[Math.floor(r() * FACT_CLAIMS.length)],
+  task:   r => TASK_TITLES[Math.floor(r() * TASK_TITLES.length)],
+};
+
+function buildStore(seed) {
+  const rnd = mulberry32(seed);
+  const pick = a => a[Math.floor(rnd() * a.length)];
+  const rint = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1));
+  const sessions = [];
+  for (let s = 0; s < 6; s++) sessions.push({ id: s, budget: rint(14, 20), own: [], turns: [] });
+  const turns = [], entities = [], edges = [];
+  let t = 0, entSeq = 0;
+
+  while (sessions.some(s => s.budget > 0)) {
+    const act = sessions.filter(s => s.budget > 0);
+    const s = act[Math.floor(rnd() * act.length)];
+    s.budget--; t++;
+    const turn = { id: "t" + t, t, session: s.id, ops: [] };
+    turns.push(turn); s.turns.push(turn);
+
+    const nTouches = rint(1, 4);
+    for (let i = 0; i < nTouches; i++) {
+      let ent;
+      if (s.own.length && rnd() < 0.58) ent = s.own[Math.floor(rnd() * s.own.length)];
+      else if (entities.length && rnd() < 0.2) ent = entities[Math.floor(rnd() * entities.length)];
+      else {
+        const kind = pick(Object.keys(VOCAB));
+        ent = { id: "e" + (++entSeq), kind, label: LABEL[kind](rnd),
+                firstT: t, lastT: t, asserts: 0, retracts: 0, session: s.id };
+        entities.push(ent); s.own.push(ent);
+      }
+      const attr = pick(VOCAB[ent.kind]);
+      if (ent.asserts > ent.retracts && rnd() < 0.15) {
+        edges.push({ kind: "retract", from: turn.id, to: ent.id, attr });
+        turn.ops.push({ attr, op: "retract", ent: ent.id });
+        ent.retracts++;
+      } else {
+        edges.push({ kind: "assert", from: turn.id, to: ent.id, attr });
+        turn.ops.push({ attr, op: "add", ent: ent.id });
+        ent.asserts++;
+      }
+      ent.lastT = t;
+    }
+    if (s.turns.length > 1 && rnd() < 0.35) {
+      const back = rint(1, Math.min(4, s.turns.length - 1));
+      const src = s.turns[s.turns.length - 1 - back];
+      edges.push({ kind: "cite", from: turn.id, to: src.id, attr: ":memory/source" });
+      turn.ops.push({ attr: ":memory/source", op: "cite", ent: src.id });
+    }
+  }
+
+  const byT = {}, entById = {};
+  turns.forEach(tr => { byT[tr.id] = tr; });
+  entities.forEach(en => { entById[en.id] = en; });
+  return { turns, entities, edges, sessions, maxT: t, byT, entById };
+}
+
+// ---- shared chrome: stats, hover, detail card ---------------------------------
+
+function fmtStats(store) {
+  const c = k => store.edges.filter(e => e.kind === k).length;
+  return "nodes " + (store.turns.length + store.entities.length) +
+    " (turn " + store.turns.length + " · entity " + store.entities.length + ")" +
+    " · edges " + store.edges.length +
+    " (assert " + c("assert") + " · retract " + c("retract") + " · cite " + c("cite") + ")";
+}
+
+const detailEl = document.getElementById("detail");
+
+function showDetail(store, byId, id) {
+  const m = byId[id];
+  let html;
+  if (m.kind === "turn") {
+    const tr = store.turns[m.idx];
+    html = "<b>turn node · t = " + tr.t + "</b> <span class='dim'>session-" + (tr.session + 1) + "</span><br>" +
+      tr.ops.map(o => esc(o.attr) + " " +
+        (o.op === "retract" ? "<span class='bad'>retract</span>" : o.op) +
+        " → " + o.ent).join("<br>");
+  } else {
+    const en = store.entities[m.idx];
+    html = "<b>entity node · " + esc(en.label) + "</b> <span class='dim'>" + en.kind +
+      " · session-" + (en.session + 1) + "</span><br>" +
+      "asserts " + en.asserts + " · retracts " + en.retracts + "<br>" +
+      "touched t " + en.firstT + " … " + en.lastT;
+  }
+  detailEl.innerHTML = html;
+  detailEl.hidden = false;
+}
+
+// nodeEls: Map id→element · edgeEls: array aligned with store.edges
+function wireHover(svg, store, byId, nodeEls, edgeEls) {
+  const adj = new Map();
+  store.edges.forEach((e, i) => {
+    if (!adj.has(e.from)) adj.set(e.from, []);
+    if (!adj.has(e.to)) adj.set(e.to, []);
+    adj.get(e.from).push({ i, other: e.to });
+    adj.get(e.to).push({ i, other: e.from });
+  });
+  function clear() {
+    svg.classList.remove("hl");
+    svg.querySelectorAll(".on,.nbr").forEach(el => el.classList.remove("on", "nbr"));
+    detailEl.hidden = true;
+  }
+  function on(id) {
+    clear();
+    svg.classList.add("hl");
+    const nEl = nodeEls.get(id);
+    if (nEl) nEl.classList.add("on");
+    (adj.get(id) || []).forEach(({ i, other }) => {
+      if (edgeEls[i]) edgeEls[i].classList.add("on");
+      const o = nodeEls.get(other);
+      if (o) o.classList.add("nbr");
+    });
+    showDetail(store, byId, id);
+  }
+  svg.addEventListener("pointerover", e => {
+    const t = e.target.closest("[data-node]") || e.target.closest("[data-edge]");
+    if (!t) return;
+    const id = t.dataset.node || t.dataset.edge;
+    if (id) on(id);
+  });
+  svg.addEventListener("pointerleave", clear);
+}
+
+// ---- variant A: force soup ------------------------------------------------------
+
+function variantForce(store, byId, stage) {
+  const W = Math.max(900, stage.clientWidth || 900);
+  const H = Math.max(600, stage.clientHeight || 600);
+  const svg = svgEl("svg", { width: W, height: H });
+  svg.append(svgEl("text", { x: 16, y: 22, class: "cap" },
+    "force soup — physics only, drag any node; t order is nowhere"));
+
+  const nodes = [], geo = {};
+  store.turns.forEach(tr => { const n = { id: tr.id, kind: "turn", x: 0, y: 0, vx: 0, vy: 0 }; nodes.push(n); geo[tr.id] = n; });
+  store.entities.forEach(en => { const n = { id: en.id, kind: "entity", x: 0, y: 0, vx: 0, vy: 0 }; nodes.push(n); geo[en.id] = n; });
+  nodes.forEach((n, i) => {
+    const a = (i / nodes.length) * 2 * Math.PI, r = 170 + ((i * 37) % 60);
+    n.x = W / 2 + r * Math.cos(a); n.y = H / 2 + r * Math.sin(a);
+  });
+
+  const gE = svgEl("g"), gN = svgEl("g");
+  svg.append(gE, gN);
+  const edgeEls = store.edges.map(e => {
+    const l = svgEl("line", { class: "edge " + e.kind, "data-edge": e.from });
+    if (e.kind === "assert") l.style.stroke = SESSION_COLORS[store.byT[e.from].session];
+    gE.append(l);
+    return l;
+  });
+  const nodeEls = new Map();
+  nodes.forEach(n => {
+    const el = n.kind === "turn"
+      ? svgEl("rect", { class: "node turn", "data-node": n.id, x: -4.5, y: -4.5, width: 9, height: 9 })
+      : svgEl("circle", { class: "node entity", "data-node": n.id, r: 5 });
+    if (n.kind === "turn") el.style.fill = SESSION_COLORS[store.byT[n.id].session];
+    nodeEls.set(n.id, el);
+    gN.append(el);
+  });
+  stage.append(svg);
+  wireHover(svg, store, byId, nodeEls, edgeEls);
+
+  // spring-embedder, settles then idles; drag re-heats
+  let alpha = 1, raf = 0, dragging = null;
+  function paint() {
+    store.edges.forEach((e, i) => {
+      const l = edgeEls[i], a = geo[e.from], b = geo[e.to];
+      l.setAttribute("x1", a.x); l.setAttribute("y1", a.y);
+      l.setAttribute("x2", b.x); l.setAttribute("y2", b.y);
+    });
+    nodes.forEach(n => {
+      const el = nodeEls.get(n.id);
+      if (n.kind === "turn") el.setAttribute("transform", "translate(" + n.x + "," + n.y + ") rotate(45)");
+      else { el.setAttribute("cx", n.x); el.setAttribute("cy", n.y); }
+    });
+  }
+  function step() {
+    alpha = Math.max(0.012, alpha * 0.988);
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy;
+        if (d2 < 0.5) d2 = 0.5;
+        if (d2 > 40000) continue;
+        const d = Math.sqrt(d2), f = Math.min(4, 1600 * alpha / d2);
+        dx /= d; dy /= d;
+        a.vx += dx * f; a.vy += dy * f;
+        b.vx -= dx * f; b.vy -= dy * f;
+      }
+    }
+    for (const e of store.edges) {
+      const a = geo[e.from], b = geo[e.to];
+      const rest = e.kind === "cite" ? 42 : 72;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const f = (d - rest) * 0.0045 * (e.kind === "cite" ? 0.5 : 1);
+      dx /= d; dy /= d;
+      a.vx += dx * f; a.vy += dy * f;
+      b.vx -= dx * f; b.vy -= dy * f;
+    }
+    const cap = Math.max(1, alpha * 40);
+    for (const n of nodes) {
+      n.vx += (W / 2 - n.x) * 0.0015;
+      n.vy += (H / 2 - n.y) * 0.0015;
+      n.vx *= 0.82; n.vy *= 0.82;
+      const vx = Math.max(-cap, Math.min(cap, n.vx));
+      const vy = Math.max(-cap, Math.min(cap, n.vy));
+      n.x = Math.max(20, Math.min(W - 20, n.x + vx));
+      n.y = Math.max(20, Math.min(H - 20, n.y + vy));
+    }
+  }
+  function loop() {
+    step(); paint();
+    raf = (alpha > 0.013 || dragging) ? requestAnimationFrame(loop) : 0;
+  }
+  loop();
+
+  svg.addEventListener("pointerdown", e => {
+    const t = e.target.closest("[data-node]");
+    if (!t) return;
+    dragging = geo[t.dataset.node];
+    svg.setPointerCapture(e.pointerId);
+    const p = svgPoint(svg, e);
+    dragging.x = p.x; dragging.y = p.y; dragging.vx = dragging.vy = 0;
+    alpha = Math.max(alpha, 0.35);
+    if (!raf) loop();
+  });
+  svg.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    const p = svgPoint(svg, e);
+    dragging.x = p.x; dragging.y = p.y;
+  });
+  svg.addEventListener("pointerup", () => { dragging = null; });
+}
+
+// ---- variant B: turn rail --------------------------------------------------------
+// One rail: turn nodes at strict t positions. Entities live in packed lanes
+// below; each touch is a dot on the lane at its turn's x. Citations arc above.
+
+function variantRail(store, byId, stage) {
+  const STEP = 16, PADL = 240, PADR = 40, RAIL_Y = 120, ROW_H = 17, GAP = 9;
+  const X = t => PADL + (t - 1) * STEP;
+
+  // lane packing: entities sorted by first touch; a lane is free again after
+  // GAP steps past its last occupant's last touch (room for the next label)
+  const ents = [...store.entities].sort((a, b) => a.firstT - b.firstT || a.id.localeCompare(b.id));
+  const rowLast = [];
+  for (const e of ents) {
+    let r = -1;
+    for (let i = 0; i < rowLast.length; i++) if (rowLast[i] + GAP < e.firstT) { r = i; break; }
+    if (r < 0) { r = rowLast.length; rowLast.push(-99); }
+    rowLast[r] = e.lastT;
+    e.row = r;
+  }
+  const rowY = e => RAIL_Y + 44 + e.row * ROW_H;
+
+  const W = PADL + store.maxT * STEP + PADR;
+  const H = RAIL_Y + 44 + rowLast.length * ROW_H + 70;
+  const svg = svgEl("svg", { width: W, height: H });
+  svg.append(svgEl("text", { x: 16, y: 24, class: "cap" },
+    "turn rail — one diamond per turn, left→right = t; entity lanes below, dots at touching turns"));
+
+  const nodeEls = new Map(), edgeEls = new Array(store.edges.length);
+
+  // citation arcs above the rail
+  store.edges.forEach((e, i) => {
+    if (e.kind !== "cite") return;
+    const x1 = X(store.byT[e.from].t), x2 = X(store.byT[e.to].t);
+    const h = Math.min(56, 12 + Math.abs(x2 - x1) / 6);
+    edgeEls[i] = svgEl("path", {
+      d: "M " + x1 + " " + (RAIL_Y - 12) + " Q " + ((x1 + x2) / 2) + " " + (RAIL_Y - 12 - h) + " " + x2 + " " + (RAIL_Y - 12),
+      class: "edge cite", "data-edge": e.from,
+    });
+    svg.append(edgeEls[i]);
+  });
+
+  // the rail itself
+  svg.append(svgEl("line", { x1: X(1), y1: RAIL_Y, x2: X(store.maxT), y2: RAIL_Y, class: "railline" }));
+  for (let t = 1; t <= store.maxT; t += 10)
+    svg.append(svgEl("text", { x: X(t), y: RAIL_Y + 26, class: "tlab", "text-anchor": "middle" }, "t" + t));
+
+  // entity lanes: line spanning first→last touch, node + label at first touch
+  for (const e of ents) {
+    const y = rowY(e), x0 = X(e.firstT), x1 = X(e.lastT);
+    svg.append(svgEl("line", { x1: x0, y1: y, x2: x1, y2: y, class: "lane" }));
+    const dot = svgEl("circle", { class: "node entity", "data-node": e.id, cx: x0, cy: y, r: 4.5 });
+    nodeEls.set(e.id, dot);
+    svg.append(dot);
+    svg.append(svgEl("text", { x: x0 - 8, y: y + 3.5, class: "elab", "text-anchor": "end" }, e.label));
+  }
+
+  // touch dots: one per assert/retract edge, at (turn x, entity lane y)
+  store.edges.forEach((e, i) => {
+    if (e.kind === "cite") return;
+    const turn = store.byT[e.from], ent = store.entById[e.to];
+    const x = X(turn.t), y = rowY(ent);
+    let el;
+    if (e.kind === "assert") {
+      el = svgEl("circle", { class: "edge touch assert", "data-edge": e.from, cx: x, cy: y, r: 3 });
+      el.style.fill = SESSION_COLORS[turn.session];
+    } else {
+      el = svgEl("rect", { class: "edge touch retract", "data-edge": e.from, x: x - 3, y: y - 3, width: 6, height: 6 });
+    }
+    edgeEls[i] = el;
+    svg.append(el);
+  });
+
+  // turn diamonds on the rail (last, so they sit on top)
+  for (const tr of store.turns) {
+    const el = svgEl("rect", {
+      class: "node turn", "data-node": tr.id,
+      x: -4.5, y: -4.5, width: 9, height: 9,
+      transform: "translate(" + X(tr.t) + "," + RAIL_Y + ") rotate(45)",
+    });
+    el.style.fill = SESSION_COLORS[tr.session];
+    nodeEls.set(tr.id, el);
+    svg.append(el);
+  }
+
+  stage.append(svg);
+  wireHover(svg, store, byId, nodeEls, edgeEls);
+}
+
+// ---- variant C: bipartite columns --------------------------------------------------
+// Turns (t order) left, entities (first-touch order) right, every edge a
+// bezier across the middle. No physics anywhere; labels always visible.
+
+function variantColumns(store, byId, stage) {
+  const ROW_T = 13.5, TOP = 46, XL = 130, XR = 880, W = 1060;
+  const H = TOP + store.turns.length * ROW_T + 30;
+  const turnY = tr => TOP + (tr.t - 1) * ROW_T;
+  const ents = [...store.entities].sort((a, b) => a.firstT - b.firstT || a.id.localeCompare(b.id));
+  const ROW_E = (H - TOP - 30) / ents.length;
+  const entY = en => TOP + ents.indexOf(en) * ROW_E + ROW_E / 2;
+
+  const svg = svgEl("svg", { width: W, height: H });
+  svg.append(svgEl("text", { x: XL - 20, y: 24, class: "cap" }, "turns — t order ↓"));
+  svg.append(svgEl("text", { x: W - 12, y: 24, class: "cap", "text-anchor": "end" }, "entities — first-touch order ↓"));
+
+  const edgeEls = store.edges.map(e => {
+    const tr = store.byT[e.from];
+    let el;
+    if (e.kind === "cite") {
+      const y1 = turnY(tr), y2 = turnY(store.byT[e.to]);
+      el = svgEl("path", {
+        d: "M " + (XL + 8) + " " + y1 + " C " + (XL - 36) + " " + y1 + " " + (XL - 36) + " " + y2 + " " + (XL + 8) + " " + y2,
+        class: "edge cite", "data-edge": e.from,
+      });
+    } else {
+      const en = store.entById[e.to];
+      const y1 = turnY(tr), y2 = entY(en), mid = (XL + XR) / 2;
+      el = svgEl("path", {
+        d: "M " + (XL + 8) + " " + y1 + " C " + mid + " " + y1 + " " + mid + " " + y2 + " " + (XR - 10) + " " + y2,
+        class: "edge " + e.kind, "data-edge": e.from,
+      });
+      if (e.kind === "assert") el.style.stroke = SESSION_COLORS[tr.session];
+    }
+    svg.append(el);
+    return el;
+  });
+
+  const nodeEls = new Map();
+  for (const tr of store.turns) {
+    const y = turnY(tr);
+    const el = svgEl("rect", {
+      class: "node turn", "data-node": tr.id,
+      x: -4, y: -4, width: 8, height: 8,
+      transform: "translate(" + XL + "," + y + ") rotate(45)",
+    });
+    el.style.fill = SESSION_COLORS[tr.session];
+    nodeEls.set(tr.id, el);
+    svg.append(el);
+    if (tr.t % 10 === 1)
+      svg.append(svgEl("text", { x: XL + 14, y: y + 3.5, class: "tlab" }, "t" + tr.t));
+  }
+  ents.forEach(en => {
+    const y = entY(en);
+    const el = svgEl("circle", { class: "node entity", "data-node": en.id, cx: XR, cy: y, r: 4.5 });
+    nodeEls.set(en.id, el);
+    svg.append(el);
+    svg.append(svgEl("text", { x: XR + 12, y: y + 3.5, class: "elab" }, en.label));
+  });
+
+  stage.append(svg);
+  wireHover(svg, store, byId, nodeEls, edgeEls);
+}
+
+// ---- switcher ---------------------------------------------------------------------
+
+const VARIANTS = [
+  { key: "force", label: "A — force soup", render: variantForce,
+    hypo: "hypothesis: physics finds session clusters, but t order vanishes — watch for the hairball at this density" },
+  { key: "rail", label: "B — turn rail", render: variantRail,
+    hypo: "hypothesis: t order is structural (one rail, entity lanes, no physics) — the question is whether the lanes hold at this count" },
+  { key: "columns", label: "C — bipartite columns", render: variantColumns,
+    hypo: "hypothesis: no physics at all, labels always visible — the question is whether the crossing edges stay readable" },
+];
+
+const stage = document.getElementById("stage");
+const store = buildStore(20261023);
+const byId = {};
+store.turns.forEach((tr, i) => { byId[tr.id] = { kind: "turn", idx: i }; });
+store.entities.forEach((en, i) => { byId[en.id] = { kind: "entity", idx: i }; });
+
+document.getElementById("stat").textContent = fmtStats(store);
+
+function current() {
+  const v = new URLSearchParams(location.search).get("variant");
+  return VARIANTS.find(x => x.key === v) || VARIANTS[0];
+}
+function show(v) {
+  stage.innerHTML = "";
+  detailEl.hidden = true;
+  v.render(store, byId, stage);
+  document.getElementById("vlabel").textContent = v.label;
+  document.getElementById("hypo").textContent = v.hypo;
+  document.title = "Kala monitor prototype · " + v.key;
+  try { history.replaceState(null, "", "?variant=" + v.key); } catch (_) { /* file:// */ }
+}
+function cycle(d) {
+  const i = VARIANTS.indexOf(current());
+  show(VARIANTS[(i + d + VARIANTS.length) % VARIANTS.length]);
+}
+
+document.getElementById("prev").addEventListener("click", () => cycle(-1));
+document.getElementById("next").addEventListener("click", () => cycle(1));
+addEventListener("keydown", e => {
+  if (e.target.closest && e.target.closest("input,textarea,select,[contenteditable]")) return;
+  if (e.key === "ArrowLeft") cycle(-1);
+  if (e.key === "ArrowRight") cycle(1);
+});
+
+show(current());
+</script>
+</body>
+</html>
