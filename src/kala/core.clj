@@ -97,7 +97,11 @@
 ;; ---- bootstrap schema -------------------------------------------------------
 
 (def bootstrap-t
-  "The transaction counter of the genesis transaction."
+  "The transaction counter of the genesis transaction — the bootstrap
+   schema below is itself a transaction, so every fresh store starts at
+   t=1 with one transaction entity (its :db/txInstant is the epoch) that
+   no session ever attributes. Anything that counts a store's turns sees
+   it."
   1)
 
 (def ^:private meta-attrs

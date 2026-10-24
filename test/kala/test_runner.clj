@@ -7,6 +7,7 @@
   recovery, the per-adapter storage seams, the transactor, and the
   unit suites (kala.eid-test, kala.weak-cache-test) — are listed below."
   (:require [clojure.test :as t]
+            [kala.test-util]
 
             [kala.api-test]
             [kala.map-tx-test]

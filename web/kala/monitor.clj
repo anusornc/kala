@@ -24,8 +24,7 @@
    Same posture as the web demo: EDN stays the presentation language
    inside JSON envelopes, the server binds 127.0.0.1 only, and tx-data is
    not accepted here (ADR-0004's trust note a fortiori — this app reads)."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [kala.api :as api]
             [kala.client :as client]
@@ -182,7 +181,7 @@
      --port N        the monitor's UI port (default 8091)"
   [args]
   (loop [args args
-         {:keys [store attach seed port] :as m} {:port 8091}]
+         {:as m} {:port 8091}]
     (if-let [a (first args)]
       (cond
         (= a "--store") (recur (nnext args) (assoc m :store (second args)))

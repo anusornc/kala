@@ -3,7 +3,18 @@
    render as pr-str'd EDN — the presentation language end to end — the
    response and query-param helpers, and the endpoint wrapper that turns
    any ex-info into the project's error envelope, kinds and all. JDK's
-   built-in HttpServer only; zero dependencies beyond org.clojure/clojure."
+   built-in HttpServer only; zero dependencies beyond org.clojure/clojure.
+
+   The EDN→JSON mapping, the contract both web apps build on:
+
+   - an endpoint returns {:m {...} :status ...}; the handler unwraps it,
+     so the body IS the :m map (never a {\"m\": ...} wrapper),
+   - keywords serialize as strings that keep the leading colon
+     (\":assert\", \":dev/title\") — EDN on the wire; booleans are JSON
+     lowercase, nil is null, maps serialize as nested JSON objects, and
+     every other value (keywords among them) falls through to pr-str,
+   - so error-envelope :data is a nested JSON object whose LEAF values
+     are still pr-str'd EDN strings."
   (:require [clojure.string :as str])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler]
            [java.nio.charset StandardCharsets]))

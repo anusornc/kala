@@ -33,7 +33,7 @@
 (defn- log-file [^File root t]
   ;; Locale/ROOT: the default locale may render digits non-ASCII, which the
   ;; entry-name regex would then never match at recovery time
-  (io/file root "log" (String/format (java.util.Locale/ROOT) "%019d.dat" (to-array [t]))))
+  (io/file root "log" (String/format java.util.Locale/ROOT "%019d.dat" (to-array [t]))))
 
 (defn- read-obj [^File f]
   (with-open [in (ObjectInputStream. (FileInputStream. f))]

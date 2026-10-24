@@ -44,6 +44,12 @@
 ;; metadata is ordinary map-form data: {:db/id "datomic.tx" :db/txInstant ...}
 (def ^:private tx-tempid "datomic.tx")
 
+;; User tempids ("p1", "alice") resolve within ONE transaction only: the
+;; same string in a later transaction is a fresh tempid and mints a fresh
+;; entity (upserting unique attrs excepted). Callers that touch an entity
+;; across transactions must carry the resolved eid from the earlier
+;; report's :tempids.
+
 (defn- current-datom [db e a-id v]
   (first (filter #(core/value-eq v (.v ^Datom %))
                  (core/slice (::core/eavt db) :eavt [e a-id]))))
