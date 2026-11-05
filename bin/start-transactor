@@ -6,16 +6,39 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: start-transactor <transactor.edn> [--foreground]" >&2
+  echo "Usage: start-transactor [--foreground] <transactor.edn>" >&2
   echo "  Config keys: :host (default 127.0.0.1), :port, :storage, :path, :token, ..." >&2
+  echo "  --foreground may appear anywhere among the arguments." >&2
   exit 2
 }
 
-[[ $# -ge 1 ]] || usage
-CONFIG=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-[[ -f "$CONFIG" ]] || { echo "config not found: $CONFIG" >&2; exit 2; }
+CONFIG=""
 FOREGROUND=0
-[[ "${2:-}" == "--foreground" ]] && FOREGROUND=1
+for arg in "$@"; do
+  case "$arg" in
+    --foreground)
+      FOREGROUND=1
+      ;;
+    -h|--help)
+      usage
+      ;;
+    -*)
+      echo "unknown flag: $arg" >&2
+      usage
+      ;;
+    *)
+      if [[ -n "$CONFIG" ]]; then
+        echo "unexpected argument: $arg" >&2
+        usage
+      fi
+      CONFIG=$arg
+      ;;
+  esac
+done
+
+[[ -n "$CONFIG" ]] || usage
+CONFIG=$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")
+[[ -f "$CONFIG" ]] || { echo "config not found: $CONFIG" >&2; exit 2; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
