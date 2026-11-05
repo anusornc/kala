@@ -211,9 +211,16 @@ Datahike engine's in
 ```bash
 echo '{:port 4334 :storage :file :path "/var/data/mydb"}' > transactor.properties.edn
 clojure -M:transactor transactor.properties.edn
+# or, idempotent for agents after reboot:
+bin/start-transactor transactor.properties.edn
 ```
 
 Then connect remotely with `kala.client/connect` — see [docs/wire-protocol.md](docs/wire-protocol.md) for the protocol. Adding `:compact true` to the config lets clients trigger compaction over the wire; the default refuses (`:compact/disabled`, [ADR-0010](docs/adr/0010-client-mode-compaction-rides-the-wire-behind-a-transactor-opt-in.md)).
+
+For multi-agent shared memory (one transactor, many sessions), see
+[docs/agent-ops.md](docs/agent-ops.md): `bin/start-transactor`,
+`bin/kala-mem` (client calls without booting MCP per invocation), and
+clearer `:transact/unknown-attribute` hints.
 
 ## Release
 

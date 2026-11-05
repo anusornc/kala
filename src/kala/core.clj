@@ -223,10 +223,17 @@
   raising kind when unresolvable — the one \"resolve attribute or raise\"
   shape every read door shares. The kind is the door's choice, so raising
   it changes no observable kind — which is also why two read doors (entity
-  reverse, datoms) deliberately keep :transact/unknown-attribute here."
+  reverse, datoms) deliberately keep :transact/unknown-attribute here.
+  :transact/unknown-attribute carries a short :hint that attributes must
+  be declared (same transaction is OK; ADR-0007)."
   [db x kind]
   (or (lookup-attr db x)
-      (err kind "Unknown attribute" {:attribute x})))
+      (if (= kind :transact/unknown-attribute)
+        (err kind
+             "Unknown attribute — declare it first (same transaction is OK; see ADR-0007)"
+             {:attribute x
+              :hint "Attributes must be declared before use. Registration and use may share one transaction (ADR-0007)."})
+        (err kind "Unknown attribute" {:attribute x}))))
 
 ;; ---- index reads --------------------------------------------------------------
 

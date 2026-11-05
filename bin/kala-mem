@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# kala-mem — call kala.memory as a client of a running transactor.
+# Skips booting an MCP server per call (see docs/agent-ops.md).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+exec clojure -M:mem "$@"

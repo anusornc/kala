@@ -206,8 +206,10 @@
          (is false "expected ex-info")
          (catch clojure.lang.ExceptionInfo e
            (is (= :transact/unknown-attribute (:kala/error (ex-data e))))
-           (is (= "Unknown attribute" (.getMessage e)))
-           (is (= :person/nope (get (ex-data e) :attribute)))))))
+           (is (= "Unknown attribute — declare it first (same transaction is OK; see ADR-0007)"
+                  (.getMessage e)))
+           (is (= :person/nope (get (ex-data e) :attribute)))
+           (is (string? (:hint (ex-data e))))))))
 
 (deftest entity-point-read-with-unresolvable-keyword-eid-is-absent
   (let [conn (load-fixture!)

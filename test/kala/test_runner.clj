@@ -21,6 +21,7 @@
 
             [kala.client-test]
             [kala.mcp-test]
+            [kala.mem-test]
             [kala.backup-test]
             [kala.compaction-test]
             [kala.eid-test]
@@ -48,6 +49,7 @@
 (def ^:private once-ns-symbols
   ['kala.client-test
    'kala.mcp-test
+   'kala.mem-test
    'kala.backup-test
    'kala.compaction-test
    'kala.eid-test

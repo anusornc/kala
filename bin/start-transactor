@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# start-transactor — idempotent helper for agents after reboot.
+# If something already listens on the config's :host/:port, exit 0;
+# otherwise start `clojure -M:transactor` and wait until the port opens.
+set -euo pipefail
+
+usage() {
+  echo "Usage: start-transactor <transactor.edn> [--foreground]" >&2
+  echo "  Config keys: :host (default 127.0.0.1), :port, :storage, :path, :token, ..." >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || usage
+CONFIG=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+[[ -f "$CONFIG" ]] || { echo "config not found: $CONFIG" >&2; exit 2; }
+FOREGROUND=0
+[[ "${2:-}" == "--foreground" ]] && FOREGROUND=1
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+# Resolve host/port from the same parser the transactor uses.
+HOST_PORT=$(KALA_TX_CONFIG="$CONFIG" clojure -M -e '
+(require (quote [kala.transactor :as t]))
+(let [c (t/parse-config (slurp (System/getenv "KALA_TX_CONFIG")))]
+  (when-not (:port c)
+    (binding [*out* *err*] (println "config requires :port") (System/exit 2)))
+  (println (str (or (:host c) "127.0.0.1") " " (:port c))))
+')
+HOST=${HOST_PORT%% *}
+PORT=${HOST_PORT##* }
+HOST=$(echo "$HOST" | tr -d '[:space:]')
+PORT=$(echo "$PORT" | tr -d '[:space:]')
+[[ -n "$HOST" && -n "$PORT" ]] || { echo "failed to parse host/port from $CONFIG" >&2; exit 2; }
+
+listening() {
+  (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null
+}
+
+if listening; then
+  echo "transactor already listening on ${HOST}:${PORT}"
+  exit 0
+fi
+
+LOG_DIR=${KALA_TRANSACTOR_LOG_DIR:-$(dirname "$CONFIG")}
+mkdir -p "$LOG_DIR"
+LOG="$LOG_DIR/transactor.log"
+PID_FILE="$LOG_DIR/transactor.pid"
+
+if [[ "$FOREGROUND" -eq 1 ]]; then
+  echo "starting transactor on ${HOST}:${PORT} (foreground)"
+  exec clojure -M:transactor "$CONFIG"
+fi
+
+nohup clojure -M:transactor "$CONFIG" >>"$LOG" 2>&1 &
+echo $! >"$PID_FILE"
+
+for _ in $(seq 1 60); do
+  if listening; then
+    echo "transactor up on ${HOST}:${PORT} (pid $(cat "$PID_FILE"))"
+    exit 0
+  fi
+  if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "transactor exited before binding; see $LOG" >&2
+    tail -n 40 "$LOG" >&2 || true
+    exit 1
+  fi
+  sleep 1
+done
+
+echo "transactor failed to become ready on ${HOST}:${PORT}; see $LOG" >&2
+tail -n 40 "$LOG" >&2 || true
+exit 1
