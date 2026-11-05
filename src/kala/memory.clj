@@ -245,6 +245,66 @@
        :tempids (dissoc (:tempids report) :db/current-tx current-tx-tempid)
        :datoms (count (:tx-data report))})))
 
+;; ---- client-surface option mapping ---------------------------------------------
+;; The one args→opts mapping both client surfaces (the MCP server and the
+;; mem CLI) share, so the two edges cannot drift: hand each builder a
+;; native-EDN args map — structure-bearing values as EDN data, numbers as
+;; numbers, absent or nil keys meaning absent — and get the opts map its
+;; read door takes. Required-argument validation stays at each edge (the
+;; kinds differ per surface); the mapping lives here.
+
+(defn- as-long [v]
+  (when (some? v) (long v)))
+
+(defn context-opts
+  [{:keys [as-of cap corrections with-t min-t]}]
+  (cond-> {}
+    as-of (assoc :as-of (as-long as-of))
+    cap (assoc :cap (as-long cap))
+    (some? corrections) (assoc :corrections? (boolean corrections))
+    (some? with-t) (assoc :with-t (boolean with-t))
+    min-t (assoc :min-t (as-long min-t))))
+
+(defn recall-opts
+  [{:keys [args as-of limit]}]
+  (cond-> {:args (or args [])}
+    as-of (assoc :as-of (as-long as-of))
+    limit (assoc :limit (as-long limit))))
+
+(defn read-opts
+  [{:keys [pattern as-of]}]
+  (cond-> {}
+    pattern (assoc :pattern pattern)
+    as-of (assoc :as-of (as-long as-of))))
+
+(defn- scope-keyword
+  "The history scope as a keyword — :entity, \"entity\" and \":entity\"
+  all mean :entity."
+  [v]
+  (cond
+    (keyword? v) v
+    (string? v) (keyword (str/replace-first v #"^:" ""))
+    :else (core/err :memory/bad-option "history :scope must be :entity or :session" {:scope v})))
+
+(defn history-opts
+  "The args key is :session-id (both client surfaces' spelling); it maps
+  to memory/history's :session opt."
+  [{:keys [scope entity session-id attrs from-t to-t as-of limit]}]
+  (cond-> {:scope (scope-keyword scope)}
+    entity (assoc :entity (as-long entity))
+    session-id (assoc :session session-id)
+    attrs (assoc :attrs attrs)
+    from-t (assoc :from-t (as-long from-t))
+    to-t (assoc :to-t (as-long to-t))
+    as-of (assoc :as-of (as-long as-of))
+    limit (assoc :limit (as-long limit))))
+
+(defn turns-opts
+  [{:keys [as-of limit]}]
+  (cond-> {}
+    as-of (assoc :as-of (as-long as-of))
+    limit (assoc :limit (as-long limit))))
+
 ;; ---- read doors ----------------------------------------------------------------
 
 (def ^:private default-limit 100)

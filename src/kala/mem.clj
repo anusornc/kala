@@ -64,30 +64,16 @@
   (when-some [c (:conn state)]
     (client/close c)))
 
-(defn- opt-long [v]
-  (when (some? v) (long v)))
-
-(defn- scope-arg!
-  [v]
-  (cond
-    (keyword? v) v
-    (string? v) (keyword (str/replace-first v #"^:" ""))
-    :else (core/err :mem/bad-argument "history :scope must be :entity or :session" {:scope v})))
-
 (defn call-tool
-  "Dispatch one memory tool against a boot state. Public for tests."
+  "Dispatch one memory tool against a boot state. Public for tests. The
+  args→opts mapping is kala.memory's own (the builders the MCP surface
+  shares) — required-argument checks are all this edge adds."
   [{:keys [conn session-id session-eid]} tool args]
   (let [args (or args {})
         db (api/db conn)]
     (case tool
       "context"
-      (memory/context db
-                      (cond-> {}
-                        (contains? args :as-of) (assoc :as-of (opt-long (:as-of args)))
-                        (contains? args :cap) (assoc :cap (opt-long (:cap args)))
-                        (contains? args :corrections) (assoc :corrections? (boolean (:corrections args)))
-                        (contains? args :with-t) (assoc :with-t (boolean (:with-t args)))
-                        (contains? args :min-t) (assoc :min-t (opt-long (:min-t args)))))
+      (memory/context db (memory/context-opts args))
 
       "record"
       (let [tx-data (:tx-data args)]
@@ -101,40 +87,24 @@
       (let [q (:query args)]
         (when (nil? q)
           (core/err :mem/bad-argument "recall :query is required" {}))
-        (memory/query db q
-                      (cond-> {:args (or (:args args) [])}
-                        (contains? args :as-of) (assoc :as-of (opt-long (:as-of args)))
-                        (contains? args :limit) (assoc :limit (opt-long (:limit args))))))
+        (memory/query db q (memory/recall-opts args)))
 
       "read"
       (let [entity (:entity args)]
         (when (nil? entity)
           (core/err :mem/bad-argument "read :entity is required" {}))
-        (memory/pull db entity
-                     (cond-> {}
-                       (contains? args :pattern) (assoc :pattern (:pattern args))
-                       (contains? args :as-of) (assoc :as-of (opt-long (:as-of args))))))
+        (memory/pull db entity (memory/read-opts args)))
 
       "history"
       (let [scope (:scope args)]
         (when (nil? scope)
           (core/err :mem/bad-argument "history :scope is required (:entity or :session)" {}))
-        (memory/history db
-                        (cond-> {:scope (scope-arg! scope)}
-                          (contains? args :entity) (assoc :entity (opt-long (:entity args)))
-                          (contains? args :session-id) (assoc :session (:session-id args))
-                          (contains? args :attrs) (assoc :attrs (:attrs args))
-                          (contains? args :from-t) (assoc :from-t (opt-long (:from-t args)))
-                          (contains? args :to-t) (assoc :to-t (opt-long (:to-t args)))
-                          (contains? args :as-of) (assoc :as-of (opt-long (:as-of args)))
-                          (contains? args :limit) (assoc :limit (opt-long (:limit args))))))
+        (memory/history db (memory/history-opts args)))
 
       "turns"
       (memory/turns db
                     (or (:session-id args) session-id)
-                    (cond-> {}
-                      (contains? args :as-of) (assoc :as-of (opt-long (:as-of args)))
-                      (contains? args :limit) (assoc :limit (opt-long (:limit args)))))
+                    (memory/turns-opts args))
 
       (core/err :mem/unknown-tool
                 (str "Unknown tool: " tool " (context|record|recall|read|history|turns)")
@@ -182,16 +152,10 @@
           (core/err :mem/bad-argument "serve map needs :op (tool name string)" {:got first}))
         [op args])
 
-      (symbol? first)
-      (let [args (edn/read {:eof {}} rdr)]
-        [(name first) (if (= ::eof args) {} args)])
-
-      (string? first)
-      (let [args (edn/read {:eof {}} rdr)]
-        [first (if (= ::eof args) {} args)])
-
-      (keyword? first)
-      (let [args (edn/read {:eof {}} rdr)]
+      (or (symbol? first) (string? first) (keyword? first))
+      ;; `tool` bare, or `tool {args}` — the sentinel distinguishes a
+      ;; missing args form from an explicit {}
+      (let [args (edn/read {:eof ::eof} rdr)]
         [(name first) (if (= ::eof args) {} args)])
 
       :else

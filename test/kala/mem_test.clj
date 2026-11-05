@@ -48,6 +48,32 @@
             (is (string? (:hint (ex-data e))))
             (is (re-find #"declare" (.getMessage e)))))))))
 
+(deftest read-history-turns-round-trip
+  (with-mem-state
+    (fn [state]
+      (let [report (mem/call-tool state "record"
+                                  {:tx-data [{:db/id "n" :db/ident :note/text
+                                              :db/valueType :db.type/string
+                                              :db/cardinality :db.cardinality/one}
+                                             {:db/id "e" :note/text "hello"}]})
+            eid (get-in report [:tempids "e"])]
+        (testing "read pulls the entity"
+          (let [doc (mem/call-tool state "read" {:entity eid})]
+            (is (= "hello" (:note/text doc)))))
+        (testing "history by session scope — the :session-id arg maps to :session"
+          (let [{:keys [result]} (mem/call-tool state "history"
+                                                {:scope "session" :session-id "mem-test"})]
+            (is (seq result))
+            (is (some #(= :note/text (:a %)) result))))
+        (testing "history by entity scope accepts the keyword spelling too"
+          (let [{:keys [result]} (mem/call-tool state "history"
+                                                {:scope :entity :entity eid})]
+            (is (some #(= :note/text (:a %)) result))))
+        (testing "turns lists the session's turn listing"
+          (let [{:keys [turns]} (mem/call-tool state "turns" {})]
+            (is (= 1 (count turns)))
+            (is (= 1 (second (first turns))))))))))
+
 (deftest serve-line-parser
   (is (= ["context" {:with-t true}]
          (#'mem/parse-serve-line "context {:with-t true}")))
