@@ -97,7 +97,7 @@
    :transact/bad-op [:op :tx-data]
    :transact/bad-entity [:e :v :op]
    :transact/bad-lookup-ref [:ref]
-   :transact/unknown-attribute [:attribute]
+   :transact/unknown-attribute [:attribute :hint]
    :transact/unknown-ident [:ident]
    :transact/unknown-value-type [:attribute :value-type]
    :transact/bad-value-type [:attribute :value-type :op]

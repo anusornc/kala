@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# start-transactor — idempotent helper for agents after reboot.
+# If a kala transactor already listens on the config's :host/:port, exit
+# 0; otherwise start `clojure -M:transactor` and wait until the port
+# opens. A foreign process holding the port is an error, not a pass.
+set -euo pipefail
+
+usage() {
+  echo "Usage: start-transactor <transactor.edn> [--foreground]" >&2
+  echo "  Config keys: :host (default 127.0.0.1), :port, :storage, :path, :token, ..." >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || usage
+CONFIG=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+[[ -f "$CONFIG" ]] || { echo "config not found: $CONFIG" >&2; exit 2; }
+FOREGROUND=0
+[[ "${2:-}" == "--foreground" ]] && FOREGROUND=1
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+# Resolve host/port from the same parser the transactor uses.
+HOST_PORT=$(KALA_TX_CONFIG="$CONFIG" clojure -M -e '
+(require (quote [kala.transactor :as t]))
+(let [c (t/parse-config (slurp (System/getenv "KALA_TX_CONFIG")))]
+  (when-not (:port c)
+    (binding [*out* *err*] (println "config requires :port") (System/exit 2)))
+  (println (str (or (:host c) "127.0.0.1") " " (:port c))))
+')
+HOST=${HOST_PORT%% *}
+PORT=${HOST_PORT##* }
+HOST=$(echo "$HOST" | tr -d '[:space:]')
+PORT=$(echo "$PORT" | tr -d '[:space:]')
+[[ -n "$HOST" && -n "$PORT" ]] || { echo "failed to parse host/port from $CONFIG" >&2; exit 2; }
+
+# A raw port check can't tell a kala transactor from any other process
+# that happens to hold the port — and this helper's whole job is not
+# blessing a foreign listener as "the transactor is up". So the check
+# speaks one wire frame: :connect must be a connection's first message
+# (wire.clj), and a kala transactor answers with a length-prefixed EDN
+# map carrying :status — a token mismatch included. Anything else
+# (HTTP server, silent closer, garbage) is "not a transactor".
+# python3 is already this repo's scripting dependency (web/e2e.sh).
+probe_transactor() {
+  local PROBE_HOST=${HOST/0.0.0.0/127.0.0.1}
+  python3 - "$PROBE_HOST" "$PORT" <<'PY'
+import socket, struct, sys
+host, port = sys.argv[1], int(sys.argv[2])
+msg = b"{:op :connect :protocol-version 1}"
+s = None
+try:
+    s = socket.create_connection((host, port), timeout=5)
+    s.settimeout(5)
+    s.sendall(struct.pack(">i", len(msg)) + msg)
+    header = b""
+    while len(header) < 4:
+        chunk = s.recv(4 - len(header))
+        if not chunk:
+            break
+        header += chunk
+    if len(header) < 4:
+        print("foreign")
+        sys.exit(2)
+    (n,) = struct.unpack(">i", header)
+    body = b""
+    while len(body) < n and n <= 1048576:
+        chunk = s.recv(n - len(body))
+        if not chunk:
+            break
+        body += chunk
+    ok = body.lstrip().startswith(b"{") and b":status" in body
+    print("kala" if ok else "foreign")
+    sys.exit(0 if ok else 2)
+except Exception:
+    print("foreign")
+    sys.exit(2)
+finally:
+    if s is not None:
+        s.close()
+PY
+}
+
+port_open() {
+  (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null
+}
+
+if port_open; then
+  if [ "$(probe_transactor)" = "kala" ]; then
+    echo "transactor already listening on ${HOST}:${PORT}"
+    exit 0
+  fi
+  echo "something else is listening on ${HOST}:${PORT} — not a kala transactor;" >&2
+  echo "free the port or point the config elsewhere; refusing to guess" >&2
+  exit 1
+fi
+
+LOG_DIR=${KALA_TRANSACTOR_LOG_DIR:-$(dirname "$CONFIG")}
+mkdir -p "$LOG_DIR"
+LOG="$LOG_DIR/transactor.log"
+PID_FILE="$LOG_DIR/transactor.pid"
+
+if [[ "$FOREGROUND" -eq 1 ]]; then
+  echo "starting transactor on ${HOST}:${PORT} (foreground)"
+  exec clojure -M:transactor "$CONFIG"
+fi
+
+nohup clojure -M:transactor "$CONFIG" >>"$LOG" 2>&1 &
+echo $! >"$PID_FILE"
+
+for _ in $(seq 1 60); do
+  if port_open; then
+    echo "transactor up on ${HOST}:${PORT} (pid $(cat "$PID_FILE"))"
+    exit 0
+  fi
+  if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "transactor exited before binding; see $LOG" >&2
+    tail -n 40 "$LOG" >&2 || true
+    exit 1
+  fi
+  sleep 1
+done
+
+echo "transactor failed to become ready on ${HOST}:${PORT}; see $LOG" >&2
+tail -n 40 "$LOG" >&2 || true
+exit 1

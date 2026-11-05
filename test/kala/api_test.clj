@@ -146,7 +146,11 @@
       (try (api/transact conn [[:db/add "e1" :nope/nothing 1]])
            (is false "expected ex-info")
            (catch clojure.lang.ExceptionInfo e
-             (is (= :transact/unknown-attribute (:kala/error (ex-data e)))))))
+             (let [d (ex-data e)]
+               (is (= :transact/unknown-attribute (:kala/error d)))
+               (is (= :nope/nothing (:attribute d)))
+               (is (string? (:hint d)))
+               (is (re-find #"declare|ADR-0007" (str (:hint d) (.getMessage e))))))))
     (testing "unknown ref ident"
       (install-friend-schema! conn)
       (try (api/transact conn [[:db/add "e1" :person/friend :person/ghost]])

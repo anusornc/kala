@@ -22,7 +22,6 @@
   needs a real main class, the -M path never touches it."
   (:gen-class)
   (:require [clojure.edn :as edn]
-            [clojure.string :as str]
             [clojure.data.json :as json]
             [kala.api :as api]
             [kala.client :as client]
@@ -58,9 +57,6 @@
             (str tool ": " (name arg) " " why)
             {:tool tool :argument (name arg)}))
 
-(defn- opt-long! [v]
-  (when (some? v) (long v)))
-
 (defn- edn-arg!
   "A structure-bearing argument arrives as an EDN string and is parsed at
   the edge — keywords and op vectors survive the JSON boundary intact."
@@ -78,14 +74,10 @@
                     :message (.getMessage e)}))))
 
 (defn- tool-context
-  [state {:keys [as-of cap corrections with-t min-t]}]
-  (memory/context (db state)
-                  (cond-> {}
-                    as-of (assoc :as-of (opt-long! as-of))
-                    cap (assoc :cap (opt-long! cap))
-                    (some? corrections) (assoc :corrections? (boolean corrections))
-                    (some? with-t) (assoc :with-t (boolean with-t))
-                    min-t (assoc :min-t (opt-long! min-t)))))
+  "The args→opts mapping is kala.memory's own (memory/context-opts, the
+  builder the mem CLI shares); this edge only parses what crossed JSON."
+  [state args]
+  (memory/context (db state) (memory/context-opts args)))
 
 (defn- tx-data-arg!
   "record's tx-data: an EDN string holding ONE vector of ops. Agents write
@@ -131,46 +123,37 @@
   [state {:keys [query args as-of limit]}]
   (memory/query (db state)
                 (edn-arg! "recall" :query query)
-                (cond-> {:args (if args (edn-arg! "recall" :args args) [])}
-                  as-of (assoc :as-of (opt-long! as-of))
-                  limit (assoc :limit (opt-long! limit)))))
+                (memory/recall-opts {:args (if args (edn-arg! "recall" :args args) [])
+                                     :as-of as-of
+                                     :limit limit})))
 
 (defn- tool-read
   [state {:keys [entity pattern as-of]}]
   (when (nil? entity) (bad-arg! "read" :entity "is required (an eid, or an EDN ident string)"))
   (let [eid (if (int? entity) (long entity) (edn-arg! "read" :entity entity))]
     (memory/pull (db state) eid
-                 (cond-> {}
-                   pattern (assoc :pattern (edn-arg! "read" :pattern pattern))
-                   as-of (assoc :as-of (opt-long! as-of))))))
-
-(defn- scope-arg!
-  "The scope is a scalar in the JSON sense — \"entity\" or \":entity\"
-  both mean :entity (the keyword spelling is accepted for the EDN-minded)."
-  [v]
-  (when-not (string? v) (bad-arg! "history" :scope "must be a string"))
-  (keyword (str/replace-first v #"^:" "")))
+                 (memory/read-opts {:pattern (if pattern (edn-arg! "read" :pattern pattern) nil)
+                                    :as-of as-of}))))
 
 (defn- tool-history
   [state {:keys [scope entity session-id attrs from-t to-t as-of limit]}]
   (when (nil? scope) (bad-arg! "history" :scope "is required (:entity or :session)"))
+  (when-not (string? scope) (bad-arg! "history" :scope "must be a string"))
   (memory/history (db state)
-                  (cond-> {:scope (scope-arg! scope)}
-                    entity (assoc :entity (opt-long! entity))
-                    session-id (assoc :session session-id)
-                    attrs (assoc :attrs (edn-arg! "history" :attrs attrs))
-                    from-t (assoc :from-t (opt-long! from-t))
-                    to-t (assoc :to-t (opt-long! to-t))
-                    as-of (assoc :as-of (opt-long! as-of))
-                    limit (assoc :limit (opt-long! limit)))))
+                  (memory/history-opts {:scope scope
+                                        :entity entity
+                                        :session-id session-id
+                                        :attrs (if attrs (edn-arg! "history" :attrs attrs) nil)
+                                        :from-t from-t
+                                        :to-t to-t
+                                        :as-of as-of
+                                        :limit limit})))
 
 (defn- tool-turns
   [state {:keys [session-id as-of limit]}]
   (memory/turns (db state)
                 (or session-id (:session-id @state))
-                (cond-> {}
-                  as-of (assoc :as-of (opt-long! as-of))
-                  limit (assoc :limit (opt-long! limit)))))
+                (memory/turns-opts {:as-of as-of :limit limit})))
 
 (defn- schema
   "A minimal JSON-Schema object shape for one tool's arguments."
