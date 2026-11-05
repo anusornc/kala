@@ -244,7 +244,7 @@ Args are an EDN map (not JSON). Example:
                        {})
             _ (when-not (contains? tools tool)
                 (core/err :mem/unknown-tool
-                          (str "Unknown tool: " tool)
+                          (str "Unknown tool: " tool " (" (tool-names-joined) ")")
                           {:tool tool}))
             _ (when-not (map? args-map)
                 (core/err :mem/bad-argument "Args must be an EDN map" {:got args-map}))

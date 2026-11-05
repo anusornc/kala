@@ -44,7 +44,9 @@ _Avoid_: accessor, surface
 The knowledge from an agent's runs held as datoms in a kala database under the memory schema.
 _Avoid_: knowledge base, brain, store
 
-Three namespaces share the memory surface without being synonyms: `kala.memory` is the library API (spine, session, record/recall/…); `kala.mcp` is the MCP stdio server that exposes those ops as tools; `kala.mem` is the ops CLI (`bin/kala-mem`) that calls the same library against a live transactor without booting MCP. Prefer the library name when talking about the layer; the other two are transports.
+**memory namespaces**:
+The three homes of the memory surface: `kala.memory` is the library API (spine, session, record/recall/…) and the name to use when talking about the layer; `kala.mcp` is the MCP stdio server exposing those ops as tools; `kala.mem` is the ops CLI (`bin/kala-mem`) calling the same library against a live transactor. The latter two are transports over the first.
+_Avoid_: calling all three "kala memory", treating a transport as the SDK
 
 **session**:
 One run of an agent recording memory; the datoms it writes fall within its t range.
