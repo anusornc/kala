@@ -14,10 +14,10 @@
     {:conn {:host \"127.0.0.1\" :port 4334 :token \"...\"}
      :session \"my-agent\"}
 
-  Tools: context | record | recall | read | history | turns — the same
-  six as the MCP surface. Args are an EDN map; structure-bearing values
-  (tx-data, query, pattern, attrs, scope) are EDN data here, not JSON
-  strings — the CLI is for agents and shells that already speak EDN.
+  Tools: see `tool-names` — the same six as the MCP surface. Args are an
+  EDN map; structure-bearing values (tx-data, query, pattern, attrs,
+  scope) are EDN data here, not JSON strings — the CLI is for agents and
+  shells that already speak EDN.
 
   Cold-start still pays one JVM boot. For tight loops keep --serve open,
   or point a long-lived MCP harness at the same transactor (ADR-0011:
@@ -28,9 +28,19 @@
             [kala.client :as client]
             [kala.core :as core]
             [kala.memory :as memory])
-  (:import [java.io BufferedReader InputStreamReader OutputStreamWriter PrintWriter]))
+  (:import [java.io BufferedReader InputStreamReader OutputStreamWriter
+                    PrintWriter Writer]))
 
-(def ^:private tools #{"context" "record" "recall" "read" "history" "turns"})
+(def tool-names
+  "Ordered memory tool surface shared with the MCP server (#43 lock).
+  Single source of truth for names printed in usage and unknown-tool errors."
+  ["context" "record" "recall" "read" "history" "turns"])
+
+(def ^:private tools (set tool-names))
+
+(defn- tool-names-joined
+  []
+  (str/join " | " tool-names))
 
 (defn- parse-config
   [path]
@@ -107,7 +117,7 @@
                     (memory/turns-opts args))
 
       (core/err :mem/unknown-tool
-                (str "Unknown tool: " tool " (context|record|recall|read|history|turns)")
+                (str "Unknown tool: " tool " (" (tool-names-joined) ")")
                 {:tool tool}))))
 
 (defn- error-data
@@ -120,13 +130,16 @@
   (serve mode) or Clojure's *out* (one-shot — an OutputStreamWriter)."
   [out value]
   (let [s (str (pr-str value) \newline)]
-    (.write out s)
-    (.flush out)))
+    (.write ^Writer out s)
+    (.flush ^Writer out)))
 
-(defn- run-one!
-  [state tool args out]
+(defn- with-tool-errors
+  "Run `f`, printing a :kala/error map to `out` on failure. Returns the
+  exit code (0 ok / 1 error). Shared by one-shot and --serve so the
+  ExceptionInfo/Throwable pair is not duplicated at each edge."
+  [out f]
   (try
-    (print-result! out (call-tool state tool args))
+    (f)
     0
     (catch clojure.lang.ExceptionInfo e
       (print-result! out (error-data e))
@@ -134,6 +147,12 @@
     (catch Throwable t
       (print-result! out {:kala/error :mem/error :message (.getMessage t)})
       1)))
+
+(defn- run-one!
+  [state tool args out]
+  (with-tool-errors out
+    (fn []
+      (print-result! out (call-tool state tool args)))))
 
 (defn- parse-serve-line
   "A serve line is either {:op \"context\" :args {...}} or
@@ -163,79 +182,87 @@
                 "serve line must be {:op tool :args map} or `tool {args}`"
                 {:got first}))))
 
-(defn- serve!
-  [state]
-  (let [in (BufferedReader. (InputStreamReader. System/in "UTF-8"))
-        out (PrintWriter. (OutputStreamWriter. System/out "UTF-8") true)]
-    (binding [*out* *err*]
-      (println "[kala-mem] serving session" (:session-id state)
-               "; send EDN lines (empty line quits)"))
-    (loop []
-      (when-some [line (.readLine in)]
-        (if (str/blank? line)
-          nil
-          (do
-            (try
-              (when-let [[tool args] (parse-serve-line line)]
-                (run-one! state tool args out))
-              (catch clojure.lang.ExceptionInfo e
-                (print-result! out (error-data e)))
-              (catch Throwable t
-                (print-result! out {:kala/error :mem/error :message (.getMessage t)})))
-            (recur)))))))
+(defn serve!
+  "Read newline-delimited EDN tool calls from `in`, write one EDN result
+  line per call to `out`. Blank line or EOF ends the loop. Public for
+  tests — production uses System/in and System/out."
+  ([state]
+   (serve! state
+           (BufferedReader. (InputStreamReader. System/in "UTF-8"))
+           (PrintWriter. (OutputStreamWriter. System/out "UTF-8") true)))
+  ([state ^BufferedReader in ^Writer out]
+   (binding [*out* *err*]
+     (println "[kala-mem] serving session" (:session-id state)
+              "; send EDN lines (empty line quits)"))
+   (loop []
+     (when-some [line (.readLine in)]
+       (if (str/blank? line)
+         nil
+         (do
+           (with-tool-errors out
+             (fn []
+               (when-let [[tool args] (parse-serve-line line)]
+                 (print-result! out (call-tool state tool args))
+                 nil)))
+           (recur)))))))
 
 (defn- usage!
   []
-  (.println *err* "Usage:
+  (binding [*out* *err*]
+    (println (str "Usage:
   kala-mem <config.edn> <tool> [edn-args-map]   # one-shot client call
   kala-mem <config.edn> --serve                 # persistent stdin REPL
 
 Config: {:conn {:host \"127.0.0.1\" :port 4334 :token \"...\"} :session \"id\"}
-Tools: context | record | recall | read | history | turns
+Tools: " (tool-names-joined) "
 Args are an EDN map (not JSON). Example:
   kala-mem mcp.edn context '{:with-t true}'
-  kala-mem mcp.edn record '{:tx-data [{:db/ident :note/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one} {:note/text \"hi\"}]}'")
+  kala-mem mcp.edn record '{:tx-data [{:db/ident :note/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one} {:note/text \"hi\"}]}'")))
   2)
+
+(defn run
+  "CLI entry that returns an exit code (0 ok, 1 tool/config error, 2 usage).
+  Public for tests — `-main` is the thin System/exit wrapper."
+  [args]
+  (try
+    (cond
+      (or (empty? args) (#{"-h" "--help" "help"} (first args)))
+      (usage!)
+
+      (and (>= (count args) 2) (= "--serve" (second args)))
+      (let [cfg (parse-config (first args))
+            state (open-state cfg)]
+        (try
+          (serve! state)
+          0
+          (finally (close-state! state))))
+
+      (>= (count args) 2)
+      (let [[config-path tool & more] args
+            args-map (if (seq more)
+                       (edn/read-string (str/join " " more))
+                       {})
+            _ (when-not (contains? tools tool)
+                (core/err :mem/unknown-tool
+                          (str "Unknown tool: " tool " (" (tool-names-joined) ")")
+                          {:tool tool}))
+            _ (when-not (map? args-map)
+                (core/err :mem/bad-argument "Args must be an EDN map" {:got args-map}))
+            cfg (parse-config config-path)
+            state (open-state cfg)]
+        (try
+          (run-one! state tool args-map *out*)
+          (finally (close-state! state))))
+
+      :else
+      (usage!))
+    (catch clojure.lang.ExceptionInfo e
+      (print-result! *err* (error-data e))
+      1)
+    (catch Throwable t
+      (binding [*out* *err*] (println (.getMessage t)))
+      1)))
 
 (defn -main
   [& args]
-  (let [exit
-        (try
-          (cond
-            (or (empty? args) (#{"-h" "--help" "help"} (first args)))
-            (usage!)
-
-            (and (>= (count args) 2) (= "--serve" (second args)))
-            (let [cfg (parse-config (first args))
-                  state (open-state cfg)]
-              (try
-                (serve! state)
-                0
-                (finally (close-state! state))))
-
-            (>= (count args) 2)
-            (let [[config-path tool & more] args
-                  args-map (if (seq more)
-                             (edn/read-string (str/join " " more))
-                             {})
-                  _ (when-not (contains? tools tool)
-                      (core/err :mem/unknown-tool
-                                (str "Unknown tool: " tool)
-                                {:tool tool}))
-                  _ (when-not (map? args-map)
-                      (core/err :mem/bad-argument "Args must be an EDN map" {:got args-map}))
-                  cfg (parse-config config-path)
-                  state (open-state cfg)]
-              (try
-                (run-one! state tool args-map *out*)
-                (finally (close-state! state))))
-
-            :else
-            (usage!))
-          (catch clojure.lang.ExceptionInfo e
-            (print-result! *err* (error-data e))
-            1)
-          (catch Throwable t
-            (.println *err* (.getMessage t))
-            1))]
-    (System/exit (long exit))))
+  (System/exit (long (run args))))

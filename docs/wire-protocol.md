@@ -80,8 +80,11 @@ recent speculative values; nothing is committed.
 Error kinds are the engine's typed kinds (`:transact/unique-conflict`,
 `:transact/cas-failed`, `:transact/bad-value-type`,
 `:query/unknown-attribute`, `:protocol/version-mismatch`,
-`:protocol/bad-frame`, `:transactor/error`, ...). Writes that fail leave
-the database untouched; clients may retry safely.
+`:protocol/bad-frame`, `:transactor/error`, ...). Which extra keys ride
+with a kind is declared in `kala.wire/error-data-keys` — for example
+`:transact/unknown-attribute` carries `:attribute` and a short `:hint`
+that attributes must be declared (same transaction OK; ADR-0007). Writes
+that fail leave the database untouched; clients may retry safely.
 
 ## Notifications
 

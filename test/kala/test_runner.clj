@@ -6,7 +6,8 @@
   Suites that run once, outside the matrix — the client's own coverage,
   recovery, the per-adapter storage seams, the transactor, and the
   unit suites (kala.eid-test, kala.weak-cache-test) — are listed below."
-  (:require [clojure.test :as t]
+  (:require [clojure.string :as str]
+            [clojure.test :as t]
             [kala.test-util]
 
             [kala.api-test]
@@ -84,10 +85,24 @@
 
 (defn -main [& nses]
   ;; optional args: run only the named namespaces (matrix + once lists
-  ;; restricted to them) — the single-file loop for development
-  (let [only (when (seq nses) (set (map symbol nses)))
-        behavioral (if only (filter only behavioral-ns-symbols) behavioral-ns-symbols)
-        once (if only (filter only once-ns-symbols) once-ns-symbols)
+  ;; restricted to them) — the single-file loop for development.
+  ;; Unknown names error out: trailing args used to become silent filters
+  ;; that emptied both lists and made the suite "pass" having run nothing
+  ;; (e.g. `clojure -M:test -e "..."` — `-e` is not evaluated under
+  ;; :main-opts; it was just an unknown filter).
+  (let [only (when (seq nses) (mapv symbol nses))
+        known (into #{} (concat behavioral-ns-symbols once-ns-symbols))
+        unknown (when only (into [] (remove known) only))
+        _ (when (seq unknown)
+            (binding [*out* *err*]
+              (println "kala.test-runner: unknown namespace filter(s):"
+                       (pr-str unknown))
+              (println "Known namespaces:"
+                       (str/join ", " (map str (sort known)))))
+            (System/exit 2))
+        only-set (when only (set only))
+        behavioral (if only-set (filter only-set behavioral-ns-symbols) behavioral-ns-symbols)
+        once (if only-set (filter only-set once-ns-symbols) once-ns-symbols)
         matrix-counts
         (mapv (fn [{:keys [mode storage path]}]
                 (binding [kala.test-util/*access-mode* mode

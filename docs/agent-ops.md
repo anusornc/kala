@@ -21,6 +21,7 @@ script prints that and exits 0. Otherwise it starts
 
 ```bash
 bin/start-transactor transactor.edn --foreground   # no nohup; exec's the JVM
+bin/start-transactor --foreground transactor.edn   # flag may appear anywhere
 ```
 
 Never run a second writer against the same store directory while one is
@@ -49,7 +50,7 @@ bin/kala-mem mcp.edn record '{:tx-data [{:db/ident :note/text
 bin/kala-mem mcp.edn recall '{:query [:find ?t :where [?e :note/text ?t]]}'
 ```
 
-Tools: `context` | `record` | `recall` | `read` | `history` | `turns`.
+Tools: the six names in `kala.mem/tool-names` (same surface as MCP).
 Args are an **EDN map** (not JSON); structure rides as data. Exit status
 1 means the tool raised a `:kala/error` map (printed as EDN on stdout);
 2 is usage.
