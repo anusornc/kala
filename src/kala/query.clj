@@ -253,8 +253,11 @@
                                       (assoc bindings es (:e d))))
                                   ds)))]
     (case [e-need v-need]
-      [:skip :skip] (into [] (map (constantly bindings)) datoms)
-      [:skip :check] (into [] (keep (fn [d] (when (core/value-eq v (:v d)) bindings))) datoms)
+      ;; the skip paths return lazily: materializing a per-datom vector of
+      ;; the SAME bindings map only built allocation for the join pipeline
+      ;; to re-iterate (mapcat pulls chunked over the datom vector anyway)
+      [:skip :skip] (map (constantly bindings) datoms)
+      [:skip :check] (keep (fn [d] (when (core/value-eq v (:v d)) bindings)) datoms)
       [:skip :bind] (into [] (map (fn [d] (assoc bindings vs (:v d))) datoms))
       [:bind :skip] (into [] (map (fn [d] (assoc bindings es (:e d))) datoms))
       [:bind :check] (if (= es vs)
@@ -551,6 +554,25 @@
                  els))
          deduped)))
 
+(defn- distinct-vec
+  "Distinct as a transducer over transient collections: set semantics for
+  projected tuples in one pass, without the persistent-set node-copying
+  churn the profile showed on the projection path (hashing each tuple is
+  inherent to set semantics; the HAMT path copies were not)."
+  []
+  (fn [rf]
+    (let [seen (volatile! (transient #{}))]
+      (fn
+        ([] (rf))
+        ([acc]
+         (vreset! seen (persistent! @seen))
+         (rf acc))
+        ([acc x]
+         (if (contains? @seen x)
+           acc
+           (do (vreset! seen (conj! @seen x))
+               (rf acc x))))))))
+
 (defn- project [db spec solutions with-vars]
   (cond
     (= :pull (:type spec))
@@ -570,7 +592,7 @@
         :relation (let [tuple (fn [s] (mapv #(get s %) find-vars))]
                     (if (seq with-vars)
                       (map tuple solutions)
-                      (vec (distinct (map tuple solutions)))))
+                      (into [] (comp (map tuple) (distinct-vec)) solutions)))
         :coll (map #(get % (:var spec)) solutions)
         :scalar (first (map #(get % (:var spec)) solutions))
         :string (let [[_ var] (:expr spec)]

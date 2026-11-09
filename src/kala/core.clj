@@ -42,43 +42,72 @@
         (try (compare x y) (catch Exception _ (compare (str x) (str y))))
         (compare (str x) (str y)))))
 
-(defn- cmp-field [x y]
-  (or (cmp-sentinel x y)
-      (Long/compare (long x) (long y))))
+(defn- cmp-long-val [x y]
+  ;; Sentinel first: slice bounds arrive as Datoms with MIN-V in unfilled
+  ;; slots and Long/MIN_VALUE in :tx; real datom fields are plain longs.
+  (let [c (cmp-sentinel x y)]
+    (if (nil? c) (Long/compare (long x) (long y)) c)))
 
-(defn- cmp-by [ks]
-  ;; Indexed loop over the field vector: this comparator runs O(log n) times
-  ;; per index seek and once per insert, so it must not allocate per call.
-  (let [n (count ks)
-        v-pos (loop [i 0]
-                (cond
-                  (= i n) -1
-                  (= :v (nth ks i)) i
-                  :else (recur (inc i))))]
-    (fn [x y]
-      (loop [i 0]
-        (if (= i n)
-          0
-          (let [k (nth ks i)
-                cx (k x)
-                cy (k y)
-                c (if (= i v-pos)
-                    (cmp-val cx cy)
-                    (cmp-field cx cy))]
-            (if (zero? c) (recur (inc i)) c)))))))
+;; One unrolled comparator per index. The generic closure (nth the fields
+;; vector, keyword-dispatch the Datom record, branch on the v position per
+;; field per comparison) ran O(log n) times per index seek and once per
+;; insert — visible in the profile as cmp_by ~4% of CPU. Field accessors
+;; here are direct record accessors; :a and :tx are attribute ids and the
+;; transaction counter — raw longs — so the value comparator touches only
+;; :v, where MIN-V bounds can appear.
+(defn- cmp-e-a-v-tx [x y]
+  (let [c (cmp-long-val (.e ^Datom x) (.e ^Datom y))]
+    (if (zero? c)
+      (let [c (cmp-long-val (.a ^Datom x) (.a ^Datom y))]
+        (if (zero? c)
+          (let [c (cmp-val (.v ^Datom x) (.v ^Datom y))]
+            (if (zero? c) (cmp-long-val (.tx ^Datom x) (.tx ^Datom y)) c))
+          c))
+      c)))
+
+(defn- cmp-a-e-v-tx [x y]
+  (let [c (cmp-long-val (.a ^Datom x) (.a ^Datom y))]
+    (if (zero? c)
+      (let [c (cmp-long-val (.e ^Datom x) (.e ^Datom y))]
+        (if (zero? c)
+          (let [c (cmp-val (.v ^Datom x) (.v ^Datom y))]
+            (if (zero? c) (cmp-long-val (.tx ^Datom x) (.tx ^Datom y)) c))
+          c))
+      c)))
+
+(defn- cmp-a-v-e-tx [x y]
+  (let [c (cmp-long-val (.a ^Datom x) (.a ^Datom y))]
+    (if (zero? c)
+      (let [c (cmp-val (.v ^Datom x) (.v ^Datom y))]
+        (if (zero? c)
+          (let [c (cmp-long-val (.e ^Datom x) (.e ^Datom y))]
+            (if (zero? c) (cmp-long-val (.tx ^Datom x) (.tx ^Datom y)) c))
+          c))
+      c)))
+
+(defn- cmp-v-a-e-tx [x y]
+  (let [c (cmp-val (.v ^Datom x) (.v ^Datom y))]
+    (if (zero? c)
+      (let [c (cmp-long-val (.a ^Datom x) (.a ^Datom y))]
+        (if (zero? c)
+          (let [c (cmp-long-val (.e ^Datom x) (.e ^Datom y))]
+            (if (zero? c) (cmp-long-val (.tx ^Datom x) (.tx ^Datom y)) c))
+          c))
+      c)))
 
 ;; One spec per index drives everything index-shaped below: the comparator
 ;; field order, the db key of its sorted set, and — derived from :fields
 ;; (everything before :tx, which every index sorts last) — prefix bounds,
 ;; prefix matching, and component resolution. Adding an index is one entry
-;; here, not a case arm in five places. Public: kala.tx maintains the indexes
-;; and kala.time-travel filters them for since, both through this table.
+;; here (and one unrolled comparator above), not a case arm in five places.
+;; Public: kala.tx maintains the indexes and kala.time-travel filters them
+;; for since, both through this table.
 (def index-specs
-  {:eavt {:fields [:e :a :v :tx] :set ::eavt :cmp (cmp-by [:e :a :v :tx])}
-   :aevt {:fields [:a :e :v :tx] :set ::aevt :cmp (cmp-by [:a :e :v :tx])}
-   :avet {:fields [:a :v :e :tx] :set ::avet :cmp (cmp-by [:a :v :e :tx])}
+  {:eavt {:fields [:e :a :v :tx] :set ::eavt :cmp cmp-e-a-v-tx}
+   :aevt {:fields [:a :e :v :tx] :set ::aevt :cmp cmp-a-e-v-tx}
+   :avet {:fields [:a :v :e :tx] :set ::avet :cmp cmp-a-v-e-tx}
    ;; Datomic's VAET holds only reference datoms (reverse-ref lookups)
-   :vaet {:fields [:v :a :e :tx] :set ::vaet :cmp (cmp-by [:v :a :e :tx]) :ref-only true}})
+   :vaet {:fields [:v :a :e :tx] :set ::vaet :cmp cmp-v-a-e-tx :ref-only true}})
 
 (defn ref-datom?
   "Is this datom's attribute a :db.type/ref? Drives VAET membership.
