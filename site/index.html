@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kala · agent memory you can see</title>
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<header>
+  <h1>Kala <span class="thin">· agent memory you can see</span></h1>
+  <nav class="links">
+    <a href="https://github.com/anusornc/kala">GitHub</a>
+    <a href="https://github.com/anusornc/kala/blob/main/docs/wire-protocol.md">wire protocol</a>
+    <a href="https://github.com/anusornc/kala/blob/main/docs/agent-ops.md">agent ops</a>
+    <a href="https://github.com/anusornc/kala/blob/main/docs/adr/">ADRs</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <p class="lede">Kala is a clean-room reimplementation of Datomic's architecture
+  with a memory layer for agents: every run of an agent records <b>turns</b> —
+  exactly one transaction each — attributed to a <b>session</b>, citing the turns
+  they derived from. Corrections never delete: the old belief stays in history,
+  so an agent's belief state is addressable at any point in time.</p>
+  <p class="sub">This page is a <b>static snapshot explorer</b> — the same knowledge
+  graph the live monitor draws, pre-rendered from real store exports. No server,
+  no login: what you see below is read-only data, exactly as ADR-0012 intends.</p>
+</section>
+
+<main>
+  <div class="controls">
+    <label>store
+      <select id="store">
+        <option value="showcase">showcase (recorded live)</option>
+        <option value="trial-3b">multi-agent trial 3b (real)</option>
+      </select>
+    </label>
+    <label>session
+      <select id="session"><option value="">all sessions</option></select>
+    </label>
+    <label class="slider">turns up to
+      <input id="upto" type="range" min="1" max="1" value="1">
+      <b id="upto-label">head</b>
+    </label>
+    <span class="badge" id="stat">…</span>
+  </div>
+
+  <div id="legend"></div>
+  <main id="stage"></main>
+  <aside id="detail" class="detail" hidden></aside>
+  <div class="bar">
+    <button id="prev" title="previous view">‹</button>
+    <span id="vlabel"></span>
+    <button id="next" title="next view">›</button>
+  </div>
+</main>
+
+<footer>
+  Static snapshot · the live monitor is a client-mode app over a real
+  transactor (<a href="https://github.com/anusornc/kala/blob/main/docs/adr/0012-monitor-is-client-only.md">ADR-0012</a>)
+  — this page simply ships a derived view of exported stores. The trial
+  store's agents anchored notes on lookup-ident entities, so its graph shows
+  sessions and citations only; the showcase store exercises every edge kind.
+  <a href="https://github.com/anusornc/kala">anusornc/kala</a> · EPL-1.0
+</footer>
+
+<script src="/explorer.js"></script>
+</body>
+</html>

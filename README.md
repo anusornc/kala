@@ -86,6 +86,21 @@ transacted, an entity node for its correction trail. Hand-rolled SVG, zero
 dependencies, binds 127.0.0.1, read-only — the endpoints are graph reads, a
 head ping, and two drilldowns.
 
+## Snapshot site
+
+The same knowledge graph, static: [site/](site/) is a GitHub Pages
+explorer that renders pre-baked store exports — the monitor's view modes
+over a graph payload plus the two drilldowns, no server anywhere (the
+live apps need a transactor; a Pages page can't have one, so
+[site/export.clj](site/export.clj) bakes the derivation instead). Two
+stores ship: a showcase recorded through `kala.memory`'s own path (every
+edge kind on the wall) and the real multi-agent trial 3b export (its
+sessions and citation graph — the trial's agents anchored notes on
+lookup-ident entities, which the monitor's model excludes as schema
+vocabulary, so it draws no entity nodes). Regenerate with
+`clojure -Sdeps '{:paths ["src" "web"]}' -M -e '(load-file "site/export.clj")'`;
+deploys automatically when `site/` changes.
+
 ## Memory for agents
 
 Kala ships a memory layer (`kala.memory`, inside the core jar) and an MCP
