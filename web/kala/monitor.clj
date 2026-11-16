@@ -24,8 +24,7 @@
    Same posture as the web demo: EDN stays the presentation language
    inside JSON envelopes, the server binds 127.0.0.1 only, and tx-data is
    not accepted here (ADR-0004's trust note a fortiori — this app reads)."
-  (:require [clojure.java.io :as io]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [kala.api :as api]
             [kala.client :as client]
             [kala.core :as core]
@@ -33,7 +32,7 @@
             [kala.memory :as memory]
             [kala.monitor.graph :as graph]
             [kala.transactor :as transactor])
-  (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
+  (:import [com.sun.net.httpserver HttpServer]
            [java.net InetSocketAddress]
            [java.util.concurrent Executors]))
 
@@ -53,50 +52,38 @@
                   (str (name k) " must be " what)
                   {k v}))))
 
-(defn- statics
-  "Whitelisted static resources off the classpath (web/monitor is a
-   classpath root, so resource names are bare)."
-  [^HttpExchange ex]
-  (let [path (.. ex getRequestURI getPath)
-        served {"/" ["index.html" "text/html; charset=utf-8"]
-                "/index.html" ["index.html" "text/html; charset=utf-8"]
-                "/monitor.js" ["monitor.js" "application/javascript; charset=utf-8"]
-                "/monitor.css" ["monitor.css" "text/css; charset=utf-8"]}]
-    (if-let [[_ [resource ctype]] (find served path)]
-      (let [src (io/resource resource)]
-        (if src
-          (httpd/respond! ex 200 ctype (slurp src :encoding "UTF-8"))
-          (httpd/respond! ex 404 "text/plain; charset=utf-8" "not found")))
-      (httpd/respond! ex 404 "text/plain; charset=utf-8" "not found"))))
-
 ;; ---- endpoints --------------------------------------------------------------------
+
+;; every endpoint receives the app's state atom (wired by endpoint-table
+;; below) instead of reading the global, so the table is testable without
+;; a booted server
 
 (defn- endpoint-graph
   "GET /api/graph?as-of=&session=&window=&cap= — the whole graph payload,
    derived through kala.monitor.graph. :session is a :memory.session/id
    string; an as-of below the compaction base surfaces the store's own
    :db/pruned-t kind."
-  [_ {:keys [as-of session window cap]}]
+  [state _ {:keys [as-of session window cap]}]
   (let [scope {:as-of (opt-int :as-of as-of nat-int? "a t (non-negative integer)")
                :session (when (seq session) session)
                :window (opt-int :window window pos-int? "a positive integer")
                :cap (opt-int :cap cap pos-int? "a positive integer")}
         db (api/db (:conn @state))]
-    {:m (assoc (graph/graph db scope) :ok true)}))
+    {:m (graph/graph db scope)}))
 
 (defn- endpoint-head
   "GET /api/head — the t the listener last saw committed. Follow polls
    this; a change means a new turn to fetch."
-  [_ _]
-  {:m {:ok true :t @(:head @state)}})
+  [state _ _]
+  {:m {:t @(:head @state)}})
 
 (defn- endpoint-turn
   "GET /api/turn?t= — the datoms one turn transacted, from history: the
    click-through for a turn node (derived through kala.monitor.graph)."
-  [_ {:keys [t]}]
+  [state _ {:keys [t]}]
   (let [t (opt-int :t t nat-int? "a t (non-negative integer)")
         db (api/db (:conn @state))]
-    {:m {:ok true :t t :datoms (graph/turn-datoms db t)}}))
+    {:m {:t t :datoms (graph/turn-datoms db t)}}))
 
 (defn- endpoint-entity
   "GET /api/entity?id= — the correction trail of one entity: every assert
@@ -104,19 +91,19 @@
    attributed to the turn that wrote it and that turn's session (derived
    through kala.monitor.graph). The id is a raw entity id or the graph's
    node-id form (e<eid>)."
-  [_ {:keys [id]}]
+  [state _ {:keys [id]}]
   (let [eid (or (parse-long id)
                 (when (str/starts-with? id "e")
                   (parse-long (subs id 1)))
                 (core/err :monitor/bad-param
                           "id must be an entity id" {:id id}))
         db (api/db (:conn @state))]
-    {:m {:ok true :id eid :trail (graph/entity-trail db eid)}}))
+    {:m {:id eid :trail (graph/entity-trail db eid)}}))
 
 (defn- endpoint-sessions
   "GET /api/sessions — the session menu: every memory session of the
    store with its turn count."
-  [_ _]
+  [state _ _]
   (let [db (api/db (:conn @state))
         sessions (->> (api/q '[:find ?s ?id (count ?tx)
                                :where
@@ -125,7 +112,24 @@
                              db)
                       (mapv (fn [[s id n]] {:id s :label id :turns n}))
                       (sort-by :label))]
-    {:m {:ok true :sessions sessions}}))
+    {:m {:sessions sessions}}))
+
+(defn endpoint-table
+  "The monitor's routing table over its state atom {:conn conn :head head}
+   — path → HttpHandler. -main wires these onto the server; tests drive
+   them directly over a plain conn — no booted store. The static
+   whitelist lives here too (web/monitor is a classpath root, so
+   resource names are bare)."
+  [state]
+  ["/" (httpd/static-handler {"/" ["index.html" "text/html; charset=utf-8"]
+                              "/index.html" ["index.html" "text/html; charset=utf-8"]
+                              "/monitor.js" ["monitor.js" "application/javascript; charset=utf-8"]
+                              "/monitor.css" ["monitor.css" "text/css; charset=utf-8"]})
+   "/api/graph" (httpd/handler endpoint-graph state)
+   "/api/head" (httpd/handler endpoint-head state)
+   "/api/turn" (httpd/handler endpoint-turn state)
+   "/api/entity" (httpd/handler endpoint-entity state)
+   "/api/sessions" (httpd/handler endpoint-sessions state)])
 
 ;; ---- main ---------------------------------------------------------------------------
 
@@ -207,22 +211,10 @@
                              (reset! head t))))]
     (when seed (seed! conn) (reset! head (:t (client/db conn))))
     (reset! state {:conn conn :head head})
-    (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" port) 0)]
-      (.createContext server "/" (reify HttpHandler
-                                   (handle [_ ex]
-                                     (try (statics ex)
-                                          (catch Throwable t
-                                            (println :STATIC-ERR (.getMessage t))
-                                            (httpd/respond! ex 500 "text/plain; charset=utf-8"
-                                                            (str "static error: " (.getMessage t))))
-                                          (finally (.close ex))))))
-      (doseq [[path f] (partition 2
-                                  ["/api/graph" endpoint-graph
-                                   "/api/head" endpoint-head
-                                   "/api/turn" endpoint-turn
-                                   "/api/entity" endpoint-entity
-                                   "/api/sessions" endpoint-sessions])]
-        (.createContext server path (httpd/handler f)))
+    (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" port) 0)
+          table (partition 2 (endpoint-table state))]
+      (doseq [[path h] table]
+        (.createContext server path h))
       (.setExecutor server (Executors/newCachedThreadPool))
       (.start server)
       (println "Kala monitor → http://127.0.0.1:" port)

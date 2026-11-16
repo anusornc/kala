@@ -16,12 +16,11 @@
   a web demo runs where you would run the database itself. Binds localhost
   only."
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
             [clojure.set :as cset]
             [clojure.string :as str]
             [kala.api :as api]
             [kala.httpd :as httpd])
-  (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
+  (:import [com.sun.net.httpserver HttpExchange HttpServer]
            [java.net InetSocketAddress]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]
@@ -72,27 +71,15 @@
       [{:db/id "dave" :person/name "Dave" :person/age 28
         :person/tag ["clojure" "datalog"]}])))
 
-;; ---- http plumbing (shared with the monitor in kala.httpd) ---------------------
-
-(defn- statics
-  "Whitelisted static resources off the classpath (web/public is a classpath
-  root, so resource names are bare)."
-  [^HttpExchange ex]
-  (let [path (.. ex getRequestURI getPath)
-        served {"/" ["index.html" "text/html; charset=utf-8"]
-                "/index.html" ["index.html" "text/html; charset=utf-8"]
-                "/app.js" ["app.js" "application/javascript; charset=utf-8"]
-                "/styles.css" ["styles.css" "text/css; charset=utf-8"]}]
-    (if-let [[_ [resource ctype]] (find served path)]
-      (let [src (io/resource resource)]
-        (if src
-          (httpd/respond! ex 200 ctype (slurp src :encoding "UTF-8"))
-          (httpd/respond! ex 404 "text/plain; charset=utf-8" "not found")))
-      (httpd/respond! ex 404 "text/plain; charset=utf-8" "not found"))))
-
 ;; ---- api endpoints ---------------------------------------------------------------
+;;
+;; every endpoint receives the app's state atom (wired by -main) instead of
+;; reading the global — the same [state ex params] shape the monitor's
+;; endpoint-table drives in kala.httpd-test; web's wiring stays inline
+;; here, covered by its e2e script. The success envelope's :ok flag is
+;; the handler's, not the endpoint's (see kala.httpd).
 
-(defn- db-with-as-of [as-of]
+(defn- db-with-as-of [state as-of]
   (let [db (api/db (:conn @state))]
     (if as-of (api/as-of db (parse-long as-of)) db)))
 
@@ -102,21 +89,20 @@
        (take-while #(not (keyword? %)))
        (mapv pr-str)))
 
-(defn- api-query [^HttpExchange ex {:keys [as-of]}]
+(defn- api-query [state ^HttpExchange ex {:keys [as-of]}]
   (let [q (edn/read-string (httpd/body-text ex))
-        db (db-with-as-of as-of)
+        db (db-with-as-of state as-of)
         t0 (System/nanoTime)
         rel (api/q q db)
         rows (->> rel (mapv vec) (sort-by pr-str) (take 500) (mapv #(mapv pr-str %)))
         ms (/ (- (System/nanoTime) t0) 1e6)]
-    {:m {:ok true
-         :columns (find-columns q)
+    {:m {:columns (find-columns q)
          :rows rows
          :t (api/db-t db)
          :as-of (or as-of "")
          :ms ms}}))
 
-(defn- api-transact [^HttpExchange ex _]
+(defn- api-transact [state ^HttpExchange ex _]
   (let [tx-data (edn/read-string (httpd/body-text ex))
         report (api/transact (:conn @state) tx-data)
         tx-datoms (mapv (fn [d]
@@ -125,27 +111,26 @@
                         (:tx-data report))
         tempids (mapv (fn [[k v]] (str (pr-str k) " → " v))
                       (sort-by (comp str key) (:tempids report)))]
-    {:m {:ok true
-         :t (api/db-t (:db-after report))
+    {:m {:t (api/db-t (:db-after report))
          :tx-data tx-datoms
          :tempids tempids}}))
 
-(defn- api-datoms [_ {:keys [as-of]}]
-  (let [db (db-with-as-of as-of)
+(defn- api-datoms [state _ {:keys [as-of]}]
+  (let [db (db-with-as-of state as-of)
         rows (->> (api/datoms db :eavt [])
                   (take 500)
                   (mapv (fn [d] [(str (:e d)) (pr-str (:a d)) (pr-str (:v d)) (str (:tx d))])))]
-    {:m {:ok true :rows rows :t (api/db-t db)}}))
+    {:m {:rows rows :t (api/db-t db)}}))
 
-(defn- api-history [_ _]
+(defn- api-history [state _ _]
   (let [db (api/db (:conn @state))
         rows (->> (api/datoms (api/history db) :eavt [])
                   (take 500)
                   (mapv (fn [d] [(str (:e d)) (pr-str (:a d)) (pr-str (:v d))
                                  (str (:tx d)) (if (:added d) "+" "-")])))]
-    {:m {:ok true :rows rows}}))
+    {:m {:rows rows}}))
 
-(defn- api-meta [_ _]
+(defn- api-meta [state _ _]
   (let [db (api/db (:conn @state))
         attrs (->> (api/q '[:find ?i :where [?e :db/ident ?i]] db)
                    (mapv #(pr-str (first %)))
@@ -169,20 +154,18 @@
                                 :else (str "+ " (count added) " idents"))
                               " · " datoms " datoms")))
                      (range 1 (inc top-t)))]
-    {:m {:ok true
-         :t top-t
+    {:m {:t top-t
          :datoms (count (api/datoms db :eavt []))
          :dir (:dir @state)
          :attributes attrs
          :timeline-t (vec (range 1 (inc top-t)))
          :timeline-labels labels}}))
 
-(defn- api-reopen [_ _]
+(defn- api-reopen [state _ _]
   (let [{:keys [dir] :as s} @state
         fresh (api/connect {:storage :file :path dir})]
     (reset! state (assoc s :conn fresh))
-    {:m {:ok true
-         :t (api/db-t (api/db fresh))
+    {:m {:t (api/db-t (api/db fresh))
          :message (str "reopened from " dir)}}))
 
 ;; ---- main ------------------------------------------------------------------------
@@ -194,14 +177,11 @@
     (reset! state {:conn conn :dir dir})
     (seed! conn)
     (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" port) 0)]
-      (.createContext server "/" (reify HttpHandler
-                                   (handle [_ ex]
-                                     (try (statics ex)
-                                          (catch Throwable t
-                                            (println :STATIC-ERR (.getMessage t))
-                                            (httpd/respond! ex 500 "text/plain; charset=utf-8"
-                                                            (str "static error: " (.getMessage t))))
-                                          (finally (.close ex))))))
+      (.createContext server "/"
+                      (httpd/static-handler {"/" ["index.html" "text/html; charset=utf-8"]
+                                             "/index.html" ["index.html" "text/html; charset=utf-8"]
+                                             "/app.js" ["app.js" "application/javascript; charset=utf-8"]
+                                             "/styles.css" ["styles.css" "text/css; charset=utf-8"]}))
       (doseq [[path f] (partition 2
                                   ["/api/query" api-query
                                    "/api/transact" api-transact
@@ -209,7 +189,7 @@
                                    "/api/history" api-history
                                    "/api/meta" api-meta
                                    "/api/reopen" api-reopen])]
-        (.createContext server path (httpd/handler f {:fallback-kind :web/bad-input})))
+        (.createContext server path (httpd/handler f state {:fallback-kind :web/bad-input})))
       (.setExecutor server (Executors/newCachedThreadPool))
       (.start server)
       (println "Kala web demo → http://127.0.0.1:" port)

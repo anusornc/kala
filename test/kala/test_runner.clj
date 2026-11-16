@@ -27,6 +27,7 @@
             [kala.compaction-test]
             [kala.eid-test]
             [kala.file-recovery-test]
+            [kala.httpd-test]
             [kala.transactor-test]
             [kala.wire-test]
             [kala.storage.memory-test]
@@ -55,6 +56,7 @@
    'kala.compaction-test
    'kala.eid-test
    'kala.file-recovery-test
+   'kala.httpd-test
    'kala.transactor-test
    'kala.weak-cache-test
    'kala.wire-test
