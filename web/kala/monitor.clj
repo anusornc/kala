@@ -117,8 +117,9 @@
 (defn endpoint-table
   "The monitor's routing table over its state atom {:conn conn :head head}
    — path → HttpHandler. -main wires these onto the server; tests drive
-   them directly, no booted JVM needed. The static whitelist lives here
-   too (web/monitor is a classpath root, so resource names are bare)."
+   them directly over a plain conn — no booted store. The static
+   whitelist lives here too (web/monitor is a classpath root, so
+   resource names are bare)."
   [state]
   ["/" (httpd/static-handler {"/" ["index.html" "text/html; charset=utf-8"]
                               "/index.html" ["index.html" "text/html; charset=utf-8"]

@@ -3,17 +3,26 @@
    EDN→JSON mapping, the query-param decoding, the endpoint wrapper's
    envelopes (success :ok injection, ex-info error kinds, the Throwable
    fallback), and one composition slice — the monitor's real endpoint
-   table driven over a real loopback HTTP server on a plain in-memory
-   conn, no booted store. Full-app journeys stay with the bash e2e
+   table driven over a real loopback HTTP server and a real client
+   connection to an owned transactor (ADR-0012's client-only posture
+   holds in tests too). Full-app journeys stay with the bash e2e
    scripts."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [kala.client :as client]
             [kala.httpd :as httpd]
             [kala.monitor :as monitor]
-            [kala.test-util :refer [fresh-conn]])
+            [kala.transactor :as tx])
   (:import [com.sun.net.httpserver HttpServer]
            [java.net InetSocketAddress URI]
-           [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]))
+           [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]
+           [java.nio.file Files]
+           [java.nio.file.attribute FileAttribute]))
+
+(defn- tmp-dir []
+  (str (Files/createTempDirectory
+        (str "kala-httpd-" (java.util.UUID/randomUUID))
+        (make-array FileAttribute 0))))
 
 (defn- with-server
   "Boots a real JDK HttpServer on an ephemeral loopback port around
@@ -25,6 +34,16 @@
     (.start server)
     (try (f (.getPort (.getAddress server)))
          (finally (.stop server 0)))))
+
+(defn- with-monitor-state
+  "The monitor's real state {:conn conn :head head} where conn is a wire
+   client of an owned transactor — the only conn shape the monitor ever
+   holds. Stops the transactor when the test ends."
+  [f]
+  (let [t (tx/start! {:storage :file :path (tmp-dir) :port 0})
+        conn (client/connect {:host "127.0.0.1" :port (:port t)})]
+    (try (f (atom {:conn conn :head (atom 5)}))
+         (finally ((:stop! t))))))
 
 (defn- get!
   "GET http://127.0.0.1:<port><path>?<query> -> {:status s :body str}."
@@ -47,8 +66,9 @@
                 "\"vec\":[1,2],\"map\":{\"inner\":true},\"ms\":1.5}")
            (httpd/jobj {:ok true :kw :assert :s "hi" :n 3 :none nil
                         :vec [1 2] :map {:inner true} :ms 1.5}))))
-  (testing "a set serializes as an array in pr-str order; a non-keyword
-            map key renders as its pr-str instead of throwing"
+  (testing "a set serializes as an array in pr-str order; a map key that
+            is neither keyword nor string renders as its pr-str instead
+            of throwing"
     (is (= "{\"tags\":[\":alpha\",\":beta\"],\"42\":1}"
            (httpd/jobj {:tags #{:beta :alpha} 42 1})))))
 
@@ -92,27 +112,37 @@
         (is (str/starts-with? (:body (get! port "/x" ""))
                               "{\"ok\":false,\"kind\":\":web/bad-input\",\"message\":\"boom\"}"))))))
 
-(deftest the-monitor-endpoint-table-runs-on-a-plain-conn
-  ;; the composition slice: the real endpoint table over a fresh
-  ;; in-memory conn — coercion, deps wiring, drilldowns — no booted
-  ;; store. Live statics and full journeys stay in monitor-e2e.sh.
-  (let [state (atom {:conn (fresh-conn) :head (atom 5)})
-        handlers (apply hash-map (monitor/endpoint-table state))
-        get (fn [port path query] (get! port path query))]
-    (with-server handlers
-      (fn [port]
-        (testing "head reads the injected state, not a global"
-          (is (= {:status 200 :body "{\"ok\":true,\"t\":5}"}
-                 (get port "/api/head" ""))))
-        (testing "the drilldowns answer on the same conn"
-          (is (= {:status 200 :body "{\"ok\":true,\"t\":999,\"datoms\":[]}"}
-                 (get port "/api/turn" "t=999")))
-          (is (= {:status 200 :body "{\"ok\":true,\"id\":999,\"trail\":[]}"}
-                 (get port "/api/entity" "id=999"))))
-        (testing "bad params raise the app's kind over the wire"
-          (let [{:keys [status body]} (get port "/api/turn" "t=abc")]
-            (is (= 400 status))
-            (is (str/starts-with? body "{\"ok\":false,\"kind\":\":monitor/bad-param\"")))
-          (is (= (str "{\"ok\":false,\"kind\":\":monitor/bad-param\","
-                      "\"message\":\"id must be an entity id\",\"data\":{\"id\":\"zzz\"}}")
-                 (:body (get port "/api/entity" "id=zzz")))))))))
+(deftest the-monitor-endpoint-table-runs-on-a-real-client-conn
+  ;; the composition slice: the real endpoint table over a real client
+  ;; connection to an owned transactor — coercion, deps wiring,
+  ;; drilldowns, envelope order — no seeded store. Live statics and full
+  ;; journeys stay in monitor-e2e.sh.
+  (with-monitor-state
+    (fn [state]
+      (let [handlers (apply hash-map (monitor/endpoint-table state))]
+        (with-server handlers
+          (fn [port]
+            (testing "head reads the injected state, not a global"
+              (is (= {:status 200 :body "{\"ok\":true,\"t\":5}"}
+                     (get! port "/api/head" ""))))
+            (testing "the handler's :ok injection is the envelope's first
+                      key, uniformly — /api/graph used to carry it last"
+              (is (str/starts-with? (:body (get! port "/api/graph" ""))
+                                    "{\"ok\":true,")))
+            (testing "the drilldowns answer on the same conn"
+              (is (= {:status 200 :body "{\"ok\":true,\"t\":999,\"datoms\":[]}"}
+                     (get! port "/api/turn" "t=999")))
+              (is (= {:status 200 :body "{\"ok\":true,\"id\":999,\"trail\":[]}"}
+                     (get! port "/api/entity" "id=999"))))
+            (testing "bad params raise the app's kind over the wire"
+              (let [{:keys [status body]} (get! port "/api/turn" "t=abc")]
+                (is (= 400 status))
+                (is (str/starts-with? body "{\"ok\":false,\"kind\":\":monitor/bad-param\"")))
+              (is (= (str "{\"ok\":false,\"kind\":\":monitor/bad-param\","
+                          "\"message\":\"id must be an entity id\",\"data\":{\"id\":\"zzz\"}}")
+                     (:body (get! port "/api/entity" "id=zzz")))))
+            (testing "a malformed escape in a param raises in the decode —
+                      the wrapper maps any such Throwable to the fallback
+                      kind's 400 envelope, pinned one deftest up"
+              (is (thrown? IllegalArgumentException
+                           (httpd/parse-params "t=%zz"))))))))))

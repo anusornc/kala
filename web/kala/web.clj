@@ -74,8 +74,9 @@
 ;; ---- api endpoints ---------------------------------------------------------------
 ;;
 ;; every endpoint receives the app's state atom (wired by -main) instead of
-;; reading the global directly — the endpoint table is constructible and
-;; testable without a booted server. The success envelope's :ok flag is
+;; reading the global — the same [state ex params] shape the monitor's
+;; endpoint-table drives in kala.httpd-test; web's wiring stays inline
+;; here, covered by its e2e script. The success envelope's :ok flag is
 ;; the handler's, not the endpoint's (see kala.httpd).
 
 (defn- db-with-as-of [state as-of]

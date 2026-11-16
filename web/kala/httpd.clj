@@ -103,12 +103,11 @@
   (reify HttpHandler
     (handle [_ ex]
       (try
-        (if-let [[_ [resource ctype]] (find served (.. ex getRequestURI getPath))]
-          (let [src (io/resource resource)]
-            (if src
-              (respond! ex 200 ctype (slurp src :encoding "UTF-8"))
-              (respond! ex 404 "text/plain; charset=utf-8" "not found")))
-          (respond! ex 404 "text/plain; charset=utf-8" "not found"))
+        (let [[resource ctype] (get served (.. ex getRequestURI getPath))
+              src (some-> resource io/resource)]
+          (if src
+            (respond! ex 200 ctype (slurp src :encoding "UTF-8"))
+            (respond! ex 404 "text/plain; charset=utf-8" "not found")))
         (catch Throwable t
           (println :STATIC-ERR (.getMessage t))
           (respond! ex 500 "text/plain; charset=utf-8"
