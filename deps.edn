@@ -1,7 +1,7 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.1"}}
  :aliases
- {:test {:extra-paths ["test" "mcp"]
+ {:test {:extra-paths ["test" "mcp" "web"]
          :extra-deps {org.clojure/data.json {:mvn/version "2.5.0"}}
          :main-opts ["-m" "kala.test-runner"]}
   :mcp {:extra-paths ["mcp"]
