@@ -29,7 +29,6 @@
             [kala.api :as api]
             [kala.client :as client]
             [kala.core :as core]
-            [kala.eid :as eid]
             [kala.httpd :as httpd]
             [kala.memory :as memory]
             [kala.monitor.graph :as graph]
@@ -93,39 +92,26 @@
 
 (defn- endpoint-turn
   "GET /api/turn?t= — the datoms one turn transacted, from history: the
-   click-through for a turn node."
+   click-through for a turn node (derived through kala.monitor.graph)."
   [_ {:keys [t]}]
   (let [t (opt-int :t t nat-int? "a t (non-negative integer)")
-        db (api/db (:conn @state))
-        datoms (->> (api/datoms (api/history db) :eavt [])
-                    (filter #(= (eid/tx-eid t) (:tx %)))
-                    (mapv (fn [d] [(:e d) (pr-str (:a d)) (pr-str (:v d))
-                                   (:added d)])))]
-    {:m {:ok true :t t :datoms datoms}}))
+        db (api/db (:conn @state))]
+    {:m {:ok true :t t :datoms (graph/turn-datoms db t)}}))
 
 (defn- endpoint-entity
   "GET /api/entity?id= — the correction trail of one entity: every assert
    and retract it ever received, each row [t attr value added session]
-   attributed to the turn that wrote it and that turn's session. The id is
-   a raw entity id or the graph's node-id form (e<eid>)."
+   attributed to the turn that wrote it and that turn's session (derived
+   through kala.monitor.graph). The id is a raw entity id or the graph's
+   node-id form (e<eid>)."
   [_ {:keys [id]}]
   (let [eid (or (parse-long id)
                 (when (str/starts-with? id "e")
                   (parse-long (subs id 1)))
                 (core/err :monitor/bad-param
                           "id must be an entity id" {:id id}))
-        db (api/db (:conn @state))
-        history (api/datoms (api/history db) :eavt [])
-        turn-session (into {}
-                           (for [d history :when (= :memory/session (:a d))]
-                             [(eid/eid->t (:tx d)) (:v d)]))
-        trail (->> (filter #(= eid (:e %)) history)
-                   (mapv (fn [d]
-                           (let [t (eid/eid->t (:tx d))]
-                             [t (pr-str (:a d)) (pr-str (:v d)) (:added d)
-                              (get turn-session t)])))
-                   (sort-by first))]
-    {:m {:ok true :id eid :trail trail}}))
+        db (api/db (:conn @state))]
+    {:m {:ok true :id eid :trail (graph/entity-trail db eid)}}))
 
 (defn- endpoint-sessions
   "GET /api/sessions — the session menu: every memory session of the

@@ -6,6 +6,7 @@
    so the derivation must be identical over both."
   (:require [clojure.test :refer [deftest is testing]]
             [kala.api :as api]
+            [kala.eid :as eid]
             [kala.memory :as memory]
             [kala.monitor.graph :as graph]
             [kala.test-util :refer [fresh-conn]]))
@@ -167,3 +168,87 @@
         (is (= (set (map :t (take-last 4 ts))) (into #{} (map :t) (:turns g))))
         (is (= #{"entity 6" "entity 7" "entity 8" "entity 9"}
                (into #{} (map :label) (:entities g))))))))
+
+(deftest turn-datoms-are-one-turns-transacted-datoms
+  (let [conn (ready-conn)
+        {:keys [turns eids sessions]} (seeded-store! conn)
+        [t1 t2] (map :t turns)
+        db (api/db conn)]
+    (testing "a record turn's rows are [entity attr value added] over the
+              whole transaction — its spine attribution and txInstant included"
+      (let [rows (set (graph/turn-datoms db t1))]
+        (is (= 3 (count rows)))
+        (is (contains? rows [(get eids "p1") ":dev/title" "\"Ada\"" true]))
+        (is (contains? rows [(eid/tx-eid t1) ":memory/session"
+                             (pr-str (get sessions "run-a")) true]))
+        (is (some #(and (= (eid/tx-eid t1) (nth % 0))
+                        (= ":db/txInstant" (nth % 1))
+                        (true? (nth % 3)))
+                  rows))))
+    (testing "the correction turn carries its assert and the retraction
+              the card-one replacement wrote"
+      (let [rows (set (graph/turn-datoms db t2))]
+        (is (contains? rows [(get eids "p1") ":dev/title" "\"Ada Lovelace\"" true]))
+        (is (contains? rows [(get eids "p1") ":dev/title" "\"Ada\"" false]))))
+    (testing "a t no turn owns lists nothing"
+      (is (= [] (graph/turn-datoms db 999))))
+    (testing "as-of bounds the read like every derivation — a turn the
+              view predates lists nothing"
+      (is (= [] (graph/turn-datoms (api/as-of db t1) t2))))))
+
+(deftest entity-trail-is-the-correction-trail-with-sessions
+  (let [conn (ready-conn)
+        {:keys [turns eids sessions]} (seeded-store! conn)
+        [t1 t2 t3 t4] (map :t turns)
+        db (api/db conn)
+        trail (graph/entity-trail db (get eids "p1"))]
+    (testing "rows are [t attr value added session], sorted by t —
+              the card-one correction's retract on the trail with its session"
+      (is (= 4 (count trail)))
+      (is (apply <= (map first trail)) "in t order")
+      (is (= #{[t1 ":dev/title" "\"Ada\"" true (get sessions "run-a")]
+               [t2 ":dev/title" "\"Ada Lovelace\"" true (get sessions "run-a")]
+               [t2 ":dev/title" "\"Ada\"" false (get sessions "run-a")]
+               [t3 ":dev/note" "\"analytical engine\"" true (get sessions "run-a")]}
+             (set trail))))
+    (testing "a ref's target does not inherit the ref row — p2's trail is
+              its own two rows, run-b's"
+      (is (= #{[t4 ":dev/title" "\"Bob\"" true (get sessions "run-b")]
+               [t4 ":dev/ref" (pr-str (get eids "p1")) true (get sessions "run-b")]}
+             (set (graph/entity-trail db (get eids "p2"))))))
+    (testing "schema entities have a trail too — their turns carry no session"
+      (let [vtrail (graph/entity-trail db (api/entid db :dev/title))]
+        (is (= 3 (count vtrail)) "ident, valueType, cardinality at the vocab turn")
+        (is (every? #(nil? (nth % 4)) vtrail))
+        (is (= 1 (count (distinct (map first vtrail)))) "one vocab turn wrote it all")))
+    (testing "as-of bounds the trail to the belief state"
+      (is (= #{[t1 ":dev/title" "\"Ada\"" true (get sessions "run-a")]
+               [t2 ":dev/title" "\"Ada Lovelace\"" true (get sessions "run-a")]
+               [t2 ":dev/title" "\"Ada\"" false (get sessions "run-a")]}
+             (set (graph/entity-trail (api/as-of db t2) (get eids "p1"))))))
+    (testing "an entity that never was has no trail"
+      (is (= [] (graph/entity-trail db 12345))))))
+
+(deftest the-trail-and-the-graph-tell-one-story
+  (let [conn (ready-conn)
+        {:keys [eids]} (seeded-store! conn)
+        db (api/db conn)
+        g (graph/graph db {})
+        e-p1 (str "e" (get eids "p1"))
+        trail (graph/entity-trail db (get eids "p1"))
+        session-of-turn (into {} (map (juxt :t :session)) (:turns g))]
+    (testing "every trail row is a drawn edge on the entity, same t, same attr
+              — assert/retract edges only; the ref INTO p1 draws as a ref edge,
+              not a trail step"
+      (is (= (count trail)
+             (count (filter #(and (#{:assert :retract} (:kind %)) (= e-p1 (:to %)))
+                            (:edges g)))))
+      (doseq [[t a _v added _s] trail]
+        (is (some #(and (= (str "t" t) (:from %))
+                        (= e-p1 (:to %))
+                        (= a (pr-str (:attr %)))
+                        (= added (= :assert (:kind %))))
+                  (:edges g)))))
+    (testing "the trail's session column is the turn node's session"
+      (doseq [[t _a _v _added s] trail]
+        (is (= s (session-of-turn t)))))))
