@@ -97,8 +97,7 @@ stores ship: a showcase recorded through `kala.memory`'s own path (every
 edge kind on the wall) and the real multi-agent trial 3b export (its
 sessions and citation graph — the trial's agents anchored notes on
 lookup-ident entities, which the monitor's model excludes as schema
-vocabulary, so it draws no entity nodes). Regenerate with
-`clojure -Sdeps '{:paths ["src" "web"]}' -M -e '(load-file "site/export.clj")'`;
+vocabulary, so it draws no entity nodes). Regenerate with `clojure -M:site`;
 deploys automatically when `site/` changes.
 
 ## Memory for agents

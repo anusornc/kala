@@ -5,47 +5,25 @@
 ;; connects to a live store; fixtures come from backup-log exports, and
 ;; the showcase store is recorded fresh through kala.memory's own path).
 ;;
-;; Run:   clojure -M -e '(load-file "site/export.clj")'
+;; Run:   clojure -M:site
 ;; Out:   site/data/showcase.json, site/data/trial-3b.json
 
 (require '[clojure.java.io :as io]
          '[kala.api :as api]
          '[kala.backup :as backup]
-         '[kala.eid :as eid]
          '[kala.httpd :as httpd]
          '[kala.memory :as memory]
          '[kala.monitor.graph :as graph])
 
-(defn- trail-for [db eid]
-  (let [history (api/datoms (api/history db) :eavt [])
-        turn-session (into {}
-                           (for [d history
-                                 :when (= :memory/session (:a ^kala.core.Datom d))]
-                             [(eid/eid->t (:tx ^kala.core.Datom d)) (:v ^kala.core.Datom d)]))]
-    (->> (filter #(= eid (:e ^kala.core.Datom %)) history)
-         (mapv (fn [^kala.core.Datom d]
-                 (let [t (eid/eid->t (:tx d))]
-                   [t (pr-str (:a d)) (pr-str (:v d)) (:added d)
-                    (get turn-session t)])))
-         (sort-by first))))
-
 (defn- export-payload [db]
   (let [g (assoc (graph/graph db {}) :ok true)
-        history (api/datoms (api/history db) :eavt [])
-        turn-session (into {}
-                           (for [d history
-                                 :when (= :memory/session (:a ^kala.core.Datom d))]
-                             [(eid/eid->t (:tx ^kala.core.Datom d)) (:v ^kala.core.Datom d)]))
         turns-datoms (into {}
                            (for [t (distinct (map :t (:turns g)))]
-                             [(str "t" t)
-                              (mapv (fn [^kala.core.Datom d]
-                                      [(:e d) (pr-str (:a d)) (pr-str (:v d)) (:added d)])
-                                    (filter #(= (eid/tx-eid t) (:tx ^kala.core.Datom %)) history))]))
+                             [(str "t" t) (graph/turn-datoms db t)]))
         trails (into {}
                      (for [e (:entities g)
                            :let [eid (parse-long (subs (:id e) 1))]]
-                       [(str "e" eid) (trail-for db eid)]))]
+                       [(str "e" eid) (graph/entity-trail db eid)]))]
     (assoc g :turns-datoms turns-datoms :trails trails)))
 
 (defn- write-json [path m]

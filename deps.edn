@@ -13,6 +13,8 @@
         :main-opts ["-m" "kala.web"]}
   :monitor {:extra-paths ["web" "web/monitor"]
             :main-opts ["-m" "kala.monitor"]}
+  :site {:extra-paths ["web"]
+         :main-opts ["-e" "(load-file \"site/export.clj\")"]}
   :e2e {:extra-paths ["e2e"]
         :main-opts ["-m" "kala.e2e.client-journey"]}
   :transactor {:main-opts ["-m" "kala.transactor"]}

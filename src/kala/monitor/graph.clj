@@ -31,7 +31,15 @@
    v1 posture: each derivation reads the full :eavt of the viewed db and
    of its history (history supplies the retracts and the per-turn trail
    the current view cannot show). The cap bounds the drawing, not the
-   read."
+   read.
+
+   Two drilldown derivations share this seam — the click-throughs the
+   monitor's HTTP endpoints and the site exporter both consume:
+
+     (turn-datoms db 7)   ; the datoms turn t7 transacted,
+                          ; [entity attr value added]
+     (entity-trail db 12) ; entity 12's correction trail in t order,
+                          ; [t attr value added session]"
   (:require [kala.api :as api]
             [kala.core :as core]
             [kala.eid :as eid])
@@ -67,6 +75,14 @@
   "Attribute-entity-id → ident keyword, from the current view."
   [current]
   (into {} (for [d current :when (= :db/ident (:a d))] [(:e d) (:v d)])))
+
+(defn- session-attributions
+  "Turn entity id → the memory session recorded at that turn, from the
+   datom seq given — the current view for the graph, its history for
+   the drilldowns."
+  [datoms]
+  (into {} (for [d datoms :when (= :memory/session (:a d))]
+             [(:e d) (:v d)])))
 
 (defn- schema-attrs
   "The entity ids of schema attributes whose schema-attr datom resolves to
@@ -132,9 +148,7 @@
         ;; the entities each turn touches
         turn-eids (into #{} (map :e)
                         (filter #(= :db/txInstant (:a %)) current))
-        turn-session (into {} (for [d current
-                                    :when (= :memory/session (:a d))]
-                                [(:e d) (:v d)]))
+        turn-session (session-attributions current)
         touched-by (reduce (fn [acc d]
                              (if (and (eid/user-eid? (:e d))
                                       (not (contains? meta-entities (:e d))))
@@ -230,3 +244,36 @@
                  selected)
      :entities entities
      :edges (sort-by (juxt :from :to :kind :attr) edges)}))
+
+;; ---- drilldowns -------------------------------------------------------------
+
+(defn turn-datoms
+  "The datoms one turn transacted, read from history: the turn node's
+   click-through. Each row is [entity attr value added], attr and value
+   as printed strings; t is a t, not a transaction entity id. The turn's
+   own spine attribution and txInstant are part of what it transacted
+   and appear as rows. As-of bounds the read to the belief state, like
+   every derivation here — a turn the view predates lists nothing."
+  [db t]
+  (let [head (eid/tx-eid (viewed-t db))]
+    (->> (api/datoms (api/history db) :eavt [])
+         (filter #(and (= (eid/tx-eid t) (:tx %)) (<= (:tx %) head)))
+         (mapv (fn [d] [(:e d) (pr-str (:a d)) (pr-str (:v d)) (:added d)])))))
+
+(defn entity-trail
+  "One entity's correction trail: every assert and retract it ever
+   received, in t order, each row [t attr value added session] —
+   attributed to the turn that wrote it and that turn's memory session
+   (nil when the turn carries none). As-of bounds the trail to the
+   belief state, like every derivation here."
+  [db eid]
+  (let [head (eid/tx-eid (viewed-t db))
+        history (->> (api/datoms (api/history db) :eavt [])
+                     (filter #(<= (:tx %) head)))
+        turn-session (session-attributions history)]
+    (->> (filter #(= eid (:e %)) history)
+         (mapv (fn [d]
+                 (let [t (eid/eid->t (:tx d))]
+                   [t (pr-str (:a d)) (pr-str (:v d)) (:added d)
+                    (get turn-session (:tx d))])))
+         (sort-by first))))
