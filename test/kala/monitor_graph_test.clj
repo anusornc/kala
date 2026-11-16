@@ -169,7 +169,7 @@
         (is (= #{"entity 6" "entity 7" "entity 8" "entity 9"}
                (into #{} (map :label) (:entities g))))))))
 
-(deftest turn-datoms-list-one-turns-transacted-datoms
+(deftest turn-datoms-are-one-turns-transacted-datoms
   (let [conn (ready-conn)
         {:keys [turns eids sessions]} (seeded-store! conn)
         [t1 t2] (map :t turns)
@@ -191,7 +191,10 @@
         (is (contains? rows [(get eids "p1") ":dev/title" "\"Ada Lovelace\"" true]))
         (is (contains? rows [(get eids "p1") ":dev/title" "\"Ada\"" false]))))
     (testing "a t no turn owns lists nothing"
-      (is (= [] (graph/turn-datoms db 999))))))
+      (is (= [] (graph/turn-datoms db 999))))
+    (testing "as-of bounds the read like every derivation — a turn the
+              view predates lists nothing"
+      (is (= [] (graph/turn-datoms (api/as-of db t1) t2))))))
 
 (deftest entity-trail-is-the-correction-trail-with-sessions
   (let [conn (ready-conn)

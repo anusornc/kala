@@ -255,10 +255,13 @@
    and appear as rows. As-of bounds the read to the belief state, like
    every derivation here — a turn the view predates lists nothing."
   [db t]
-  (let [head (eid/tx-eid (viewed-t db))]
-    (->> (api/datoms (api/history db) :eavt [])
-         (filter #(and (= (eid/tx-eid t) (:tx %)) (<= (:tx %) head)))
-         (mapv (fn [d] [(:e d) (pr-str (:a d)) (pr-str (:v d)) (:added d)])))))
+  (let [head (eid/tx-eid (viewed-t db))
+        turn (eid/tx-eid t)]
+    (if (<= turn head)
+      (->> (api/datoms (api/history db) :eavt [])
+           (filter #(= turn (:tx %)))
+           (mapv (fn [d] [(:e d) (pr-str (:a d)) (pr-str (:v d)) (:added d)])))
+      [])))
 
 (defn entity-trail
   "One entity's correction trail: every assert and retract it ever
@@ -268,10 +271,9 @@
    belief state, like every derivation here."
   [db eid]
   (let [head (eid/tx-eid (viewed-t db))
-        history (->> (api/datoms (api/history db) :eavt [])
-                     (filter #(<= (:tx %) head)))
+        history (api/datoms (api/history db) :eavt [])
         turn-session (session-attributions history)]
-    (->> (filter #(= eid (:e %)) history)
+    (->> (filter #(and (<= (:tx %) head) (= eid (:e %))) history)
          (mapv (fn [d]
                  (let [t (eid/eid->t (:tx d))]
                    [t (pr-str (:a d)) (pr-str (:v d)) (:added d)
