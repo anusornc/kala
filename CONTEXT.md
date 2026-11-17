@@ -80,6 +80,10 @@ The second web app's language: a client-mode UI drawing a store's transactions a
 The second web app: a client-mode UI drawing a store's transactions as a knowledge graph of entity and turn nodes. Every read travels the wire to a live transactor — a monitor is never a peer.
 _Avoid_: dashboard, viewer, admin UI
 
+**graph view**:
+The drawing itself — the same graph payload rendered as force soup, turn rail, or bipartite columns. Both the live monitor and the snapshot explorer draw it; one drawing, two surfaces.
+_Avoid_: rendering, visualization, chart
+
 **turn node**:
 The graph node for one turn: the transaction entity at its t, placed in the store's total order.
 _Avoid_: tx node, commit node

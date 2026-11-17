@@ -6,7 +6,8 @@
 ;; the showcase store is recorded fresh through kala.memory's own path).
 ;;
 ;; Run:   clojure -M:site
-;; Out:   site/data/showcase.json, site/data/trial-3b.json
+;; Out:   site/data/showcase.json, site/data/trial-3b.json,
+;;        site/graph-view.js, site/graph-view.css
 
 (require '[clojure.java.io :as io]
          '[kala.api :as api]
@@ -115,5 +116,11 @@
   (write-json (str out "/trial-3b.json")
               (export-payload (api/db (trial-store-rebuilt
                                        "docs/research/multi-agent-trial-2026-10-21/store-3b.edn"))))
+  ;; the graph view's shared files: web/shared is the single source — the
+  ;; monitor serves it off the classpath, the site gets a copy here, and
+  ;; the CI gate fails if either drifts
+  (doseq [f ["graph-view.js" "graph-view.css"]]
+    (io/copy (io/file "web/shared" f) (io/file "site" f))
+    (println "copied" (str "site/" f)))
   (println "done"))
 (System/exit 0)
