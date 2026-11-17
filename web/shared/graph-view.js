@@ -477,8 +477,10 @@ const GraphView = (() => {
     wireHover(ctx, svg);
   }
 
-  return { $, esc, svgEl, svgPoint, kw, SESSION_COLORS, fetchJson, buildVm,
-           sessionLabel, byFirstTouch, wireHover, quickDetail,
+  // the page-facing surface: what the two shells actually call — the
+  // rest of the drawing (svgEl, svgPoint, sessionLabel, byFirstTouch,
+  // wireHover, quickDetail) stays internal to the module
+  return { $, esc, kw, SESSION_COLORS, fetchJson, buildVm,
            turnDetailHtml, entityDetailHtml,
            renderForce, renderRail, renderColumns };
 })();
