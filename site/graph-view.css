@@ -1,0 +1,89 @@
+/* GraphView — the shared stylesheet of the graph view: the palette, the
+   SVG vocabulary (nodes, edges, lanes, labels), the detail card, and the
+   switcher bar container. Loaded by both the monitor and the snapshot
+   explorer; page layout and chrome live in each page's own stylesheet.
+   The detail card's vertical offset is a page decision: override
+   --detail-top (the monitor's 118px is the default). */
+
+:root {
+  --bg: #14161a;
+  --panel: #1d2026;
+  --ink: #e8e6e0;
+  --mut: #8a8f98;
+  --acc: #e0a458;
+  --ok: #7bc47f;
+  --fail: #e06c6c;
+  --line: #2a2e35;
+  --mono: "SF Mono", Menlo, Consolas, monospace;
+  --detail-top: 118px;
+}
+
+* { box-sizing: border-box; }
+
+svg { display: block; }
+
+.badge {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: var(--mut);
+}
+
+.cap { fill: var(--mut); font: 11px var(--mono); }
+.edge { stroke: var(--mut); stroke-opacity: .35; fill: none; stroke-width: 1; }
+.edge.retract { stroke: var(--fail); stroke-opacity: .85; stroke-width: 1.4; }
+.edge.cite { stroke: var(--acc); stroke-opacity: .55; stroke-width: 1.1; stroke-dasharray: 3 3; }
+.edge.ref { stroke: var(--ok); stroke-opacity: .5; stroke-width: 1.1; }
+.edge.touch { stroke-width: 0; }
+.edge.touch.retract { fill: var(--fail); }
+.hl .edge { opacity: .05; }
+.hl .edge.on { opacity: 1; stroke-width: 1.8; }
+.hl .edge.touch.on { stroke-width: 0; }
+.node { cursor: pointer; }
+.node.entity { fill: var(--panel); stroke: var(--ink); stroke-width: 1.2; }
+.node.turn { stroke: var(--bg); stroke-width: .8; }
+.hl .node { opacity: .15; }
+.hl .node.on, .hl .node.nbr { opacity: 1; }
+.railline { stroke: var(--mut); stroke-width: 1.5; }
+.lane { stroke: var(--line); stroke-width: 1; }
+.tlab { fill: var(--mut); font: 10px var(--mono); }
+.elab { fill: var(--ink); font: 11px var(--mono); }
+
+.detail {
+  position: fixed;
+  top: var(--detail-top);
+  right: 16px;
+  width: 320px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: 12px var(--mono);
+  line-height: 1.6;
+  z-index: 9;
+  max-height: 45vh;
+  overflow: auto;
+}
+.detail .dim { color: var(--mut); }
+.detail .bad { color: var(--fail); font-style: normal; }
+.detail .good { color: var(--ok); font-style: normal; }
+.detail[hidden] { display: none; }
+
+.bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid #3a3f48;
+  border-radius: 999px;
+  padding: 8px 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  z-index: 10;
+}

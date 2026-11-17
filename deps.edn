@@ -11,7 +11,7 @@
          :main-opts ["-m" "kala.demo"]}
   :web {:extra-paths ["web" "web/public"]
         :main-opts ["-m" "kala.web"]}
-  :monitor {:extra-paths ["web" "web/monitor"]
+  :monitor {:extra-paths ["web" "web/monitor" "web/shared"]
             :main-opts ["-m" "kala.monitor"]}
   :site {:extra-paths ["web"]
          :main-opts ["-e" "(load-file \"site/export.clj\")"]}

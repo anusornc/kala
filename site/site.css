@@ -1,12 +1,11 @@
-/* Kala site — same family as the demo and monitor: dark, quiet, monospace-forward. */
+/* Kala site — page chrome: layout, header, hero, controls, legend,
+   footer. The graph view's palette, SVG vocabulary, detail card, and
+   switcher bar container live in the shared graph-view.css. */
 
 :root {
-  --bg: #14161a; --panel: #1d2026; --ink: #e8e6e0; --mut: #8a8f98;
-  --acc: #e0a458; --ok: #7bc47f; --fail: #e06c6c; --line: #2a2e35;
-  --mono: "SF Mono", Menlo, Consolas, monospace;
+  /* the page is taller than the monitor's header — drop the detail card */
+  --detail-top: 140px;
 }
-
-* { box-sizing: border-box; }
 
 body {
   margin: 0; background: var(--bg); color: var(--ink);
@@ -42,11 +41,6 @@ main { padding: 8px 24px 60px; }
 }
 .controls input[type="range"] { width: 200px; accent-color: var(--acc); }
 .controls b { color: var(--acc); min-width: 44px; }
-.badge {
-  font-family: var(--mono); font-size: 12px; background: var(--panel);
-  border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
-  color: var(--mut);
-}
 
 #legend {
   padding: 2px 0 6px; font: 12px var(--mono); color: var(--mut);
@@ -59,46 +53,7 @@ main { padding: 8px 24px 60px; }
   transform: rotate(45deg); vertical-align: -1px; }
 
 #stage { overflow: auto; position: relative; padding-bottom: 70px; }
-svg { display: block; }
 
-.cap { fill: var(--mut); font: 11px var(--mono); }
-.edge { stroke: var(--mut); stroke-opacity: .35; fill: none; stroke-width: 1; }
-.edge.retract { stroke: var(--fail); stroke-opacity: .85; stroke-width: 1.4; }
-.edge.cite { stroke: var(--acc); stroke-opacity: .55; stroke-width: 1.1; stroke-dasharray: 3 3; }
-.edge.ref { stroke: var(--ok); stroke-opacity: .5; stroke-width: 1.1; }
-.edge.touch { stroke-width: 0; }
-.edge.touch.retract { fill: var(--fail); }
-.hl .edge { opacity: .05; }
-.hl .edge.on { opacity: 1; stroke-width: 1.8; }
-.hl .edge.touch.on { stroke-width: 0; }
-.node { cursor: pointer; }
-.node.entity { fill: var(--panel); stroke: var(--ink); stroke-width: 1.2; }
-.node.turn { stroke: var(--bg); stroke-width: .8; }
-.hl .node { opacity: .15; }
-.hl .node.on, .hl .node.nbr { opacity: 1; }
-.railline { stroke: var(--mut); stroke-width: 1.5; }
-.lane { stroke: var(--line); stroke-width: 1; }
-.tlab { fill: var(--mut); font: 10px var(--mono); }
-.elab { fill: var(--ink); font: 11px var(--mono); }
-
-.detail {
-  position: fixed; top: 140px; right: 16px; width: 320px;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
-  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
-  font: 12px var(--mono); line-height: 1.6; z-index: 9;
-  max-height: 45vh; overflow: auto;
-}
-.detail .dim { color: var(--mut); }
-.detail .bad { color: var(--fail); font-style: normal; }
-.detail .good { color: var(--ok); font-style: normal; }
-.detail[hidden] { display: none; }
-
-.bar {
-  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 12px;
-  background: var(--panel); border: 1px solid #3a3f48; border-radius: 999px;
-  padding: 8px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.5); z-index: 10;
-}
 .bar button {
   font: inherit; background: var(--bg); color: var(--ink);
   border: 1px solid var(--line); border-radius: 50%;

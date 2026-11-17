@@ -124,7 +124,9 @@
   ["/" (httpd/static-handler {"/" ["index.html" "text/html; charset=utf-8"]
                               "/index.html" ["index.html" "text/html; charset=utf-8"]
                               "/monitor.js" ["monitor.js" "application/javascript; charset=utf-8"]
-                              "/monitor.css" ["monitor.css" "text/css; charset=utf-8"]})
+                              "/monitor.css" ["monitor.css" "text/css; charset=utf-8"]
+                              "/graph-view.js" ["graph-view.js" "application/javascript; charset=utf-8"]
+                              "/graph-view.css" ["graph-view.css" "text/css; charset=utf-8"]})
    "/api/graph" (httpd/handler endpoint-graph state)
    "/api/head" (httpd/handler endpoint-head state)
    "/api/turn" (httpd/handler endpoint-turn state)

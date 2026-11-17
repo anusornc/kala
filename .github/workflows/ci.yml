@@ -92,6 +92,8 @@ jobs:
           python3 -I /tmp/norm-site-instants.py /tmp/committed-trial.json > /tmp/committed-trial.norm.json
           diff /tmp/fresh-showcase.json /tmp/committed-showcase.norm.json
           diff /tmp/fresh-trial.json /tmp/committed-trial.norm.json
+          diff site/graph-view.js web/shared/graph-view.js
+          diff site/graph-view.css web/shared/graph-view.css
           echo "site data matches the derivation"
 
       - name: Project E2E — transactor journey (SIGKILL crash-recovery over real processes)
